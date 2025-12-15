@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+logs/
+*.log
+
+# 输出和调试数据
+data/output/
+data/debug/
+test_output/
+
+# 可执行文件
+*.exe
+*.app
+*.dmg
+
+# 临时文件
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# 打包相关
+*.zip
+*.tar.gz
+*.rar
+

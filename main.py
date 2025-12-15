@@ -1,0 +1,89 @@
+"""
+视频延时分析工具 - 启动入口
+"""
+import sys
+import traceback
+from PyQt5.QtWidgets import QApplication, QMessageBox
+from gui import MainWindow
+from utils.logger import init_logger, get_logger, get_log_file, log_exception
+
+
+def main():
+    """主函数"""
+    # 初始化日志系统
+    init_logger()
+    logger = get_logger('Main')
+    
+    try:
+        logger.info("正在启动应用...")
+        
+        # 检查关键依赖
+        logger.info("检查依赖...")
+        try:
+            import cv2
+            logger.info(f"✓ OpenCV {cv2.__version__}")
+        except ImportError as e:
+            logger.error(f"✗ OpenCV 未安装: {e}")
+            raise
+        
+        try:
+            from paddleocr import PaddleOCR
+            logger.info(f"✓ PaddleOCR 已安装")
+        except ImportError as e:
+            logger.error(f"✗ PaddleOCR 未安装: {e}")
+            raise
+        
+        try:
+            from PyQt5 import QtCore
+            logger.info(f"✓ PyQt5 {QtCore.QT_VERSION_STR}")
+        except ImportError as e:
+            logger.error(f"✗ PyQt5 未安装: {e}")
+            raise
+        
+        logger.info("所有依赖检查通过")
+        
+        # 创建应用
+        app = QApplication(sys.argv)
+        logger.info("QApplication 已创建")
+        
+        # 创建主窗口
+        window = MainWindow()
+        logger.info("主窗口已创建")
+        
+        window.show()
+        logger.info("应用启动成功")
+        
+        # 运行应用
+        sys.exit(app.exec_())
+        
+    except Exception as e:
+        logger.error("应用启动失败！")
+        log_exception("详细错误信息:")
+        
+        # 显示错误对话框
+        error_msg = f"""应用启动失败！
+
+错误信息：
+{str(e)}
+
+请将以下日志文件发送给开发者：
+{get_log_file()}
+
+详细错误：
+{traceback.format_exc()}
+"""
+        try:
+            app = QApplication.instance()
+            if app is None:
+                app = QApplication(sys.argv)
+            QMessageBox.critical(None, "启动失败", error_msg)
+        except:
+            print(error_msg)
+        
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+
+

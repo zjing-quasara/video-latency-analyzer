@@ -3,6 +3,7 @@
 生成HTML格式的可交互分析报告
 """
 import json
+import csv
 from datetime import datetime
 from pathlib import Path
 
@@ -61,6 +62,51 @@ class ReportGenerator:
             'total_count': len(results)
         }
     
+    @staticmethod
+    def load_network_data(network_csv: str) -> dict:
+        """
+        加载网络数据CSV
+        
+        Args:
+            network_csv: 网络数据CSV文件路径
+            
+        Returns:
+            网络数据字典
+        """
+        if not network_csv or not Path(network_csv).exists():
+            return None
+        
+        data = {
+            'timestamps': [],
+            'phone_ping': [],
+            'pc_ping': [],
+            'has_phone': False,
+            'has_pc': False
+        }
+        
+        try:
+            with open(network_csv, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    data['timestamps'].append(float(row['timestamp']))
+                    
+                    # 手机ping
+                    if 'phone_ping_ms' in row:
+                        data['has_phone'] = True
+                        phone_ping = row.get('phone_ping_ms')
+                        data['phone_ping'].append(float(phone_ping) if phone_ping and phone_ping != '' else None)
+                    
+                    # 电脑ping
+                    if 'pc_ping_ms' in row:
+                        data['has_pc'] = True
+                        pc_ping = row.get('pc_ping_ms')
+                        data['pc_ping'].append(float(pc_ping) if pc_ping and pc_ping != '' else None)
+            
+            return data if (data['has_phone'] or data['has_pc']) else None
+        except Exception as e:
+            print(f"加载网络数据失败: {e}")
+            return None
+    
     @classmethod
     def generate_html(
         cls,
@@ -69,7 +115,8 @@ class ReportGenerator:
         fps: float,
         frame_step: int,
         output_path: str,
-        output_dir: Path = None
+        output_dir: Path = None,
+        network_csv: str = None
     ) -> Path:
         """
         生成HTML报告
@@ -80,6 +127,7 @@ class ReportGenerator:
             fps: 视频FPS
             frame_step: 跳帧步长
             output_path: 输出HTML文件路径
+            network_csv: 合并了网络数据的CSV文件路径（可选）
             
         Returns:
             生成的HTML文件路径
@@ -95,6 +143,19 @@ class ReportGenerator:
         chart_frames_json = json.dumps(chart_data['frames'])
         chart_delays_json = json.dumps(chart_data['delays'])
         chart_times_json = json.dumps(chart_data['times'])
+        
+        # 加载网络数据
+        network_data = cls.load_network_data(network_csv) if network_csv else None
+        has_network = network_data is not None
+        
+        if has_network:
+            network_timestamps_json = json.dumps(network_data['timestamps'])
+            network_phone_ping_json = json.dumps(network_data['phone_ping'])
+            network_pc_ping_json = json.dumps(network_data['pc_ping'])
+        else:
+            network_timestamps_json = '[]'
+            network_phone_ping_json = '[]'
+            network_pc_ping_json = '[]'
         
         # 生成帧数据（用于当前帧显示）
         frame_data_json = json.dumps([{
@@ -119,7 +180,10 @@ class ReportGenerator:
             valid_data=valid_data,
             avg_delay=stats['avg_delay'],
             min_delay=stats['min_delay'],
-            max_delay=stats['max_delay']
+            max_delay=stats['max_delay'],
+            has_network=has_network,
+            has_phone=network_data['has_phone'] if has_network else False,
+            has_pc=network_data['has_pc'] if has_network else False
         )
         
         # 替换占位符
@@ -128,6 +192,9 @@ class ReportGenerator:
         html_content = html_content.replace('__CHART_TIMES__', chart_times_json)
         html_content = html_content.replace('__FRAME_DATA__', frame_data_json)
         html_content = html_content.replace('__ANNOTATED_FPS__', str(annotated_fps))
+        html_content = html_content.replace('__NETWORK_TIMESTAMPS__', network_timestamps_json)
+        html_content = html_content.replace('__NETWORK_PHONE_PING__', network_phone_ping_json)
+        html_content = html_content.replace('__NETWORK_PC_PING__', network_pc_ping_json)
         
         # 修复双大括号
         html_content = html_content.replace('{{', '{').replace('}}', '}')
@@ -147,7 +214,10 @@ class ReportGenerator:
         valid_data: list,
         avg_delay: float,
         min_delay: float,
-        max_delay: float
+        max_delay: float,
+        has_network: bool = False,
+        has_phone: bool = False,
+        has_pc: bool = False
     ) -> str:
         """
         生成完整的HTML模板
@@ -385,8 +455,22 @@ class ReportGenerator:
             <div class="section">
                 <canvas id="delayChart"></canvas>
             </div>
+"""
         
-            <h2>2. 详细数据</h2>
+        # 如果有网络数据，添加网络监控图表
+        if has_network:
+            html_content += """
+            <h2>2. 网络监控</h2>
+            <div class="section">
+                <canvas id="networkChart"></canvas>
+            </div>
+"""
+            section_number = 3
+        else:
+            section_number = 2
+        
+        html_content += f"""
+            <h2>{section_number}. 详细数据</h2>
             <div class="section">
                 <table>
                     <thead>
@@ -596,7 +680,92 @@ class ReportGenerator:
                 }}
             }});
         }}
+"""
         
+        # 如果有网络数据，添加网络图表的JavaScript代码
+        if has_network:
+            html_content += """
+        // 网络监控图表
+        const networkTimestamps = __NETWORK_TIMESTAMPS__;
+        const networkPhonePing = __NETWORK_PHONE_PING__;
+        const networkPcPing = __NETWORK_PC_PING__;
+        
+        if (networkTimestamps.length > 0) {{
+            const ctx2 = document.getElementById('networkChart').getContext('2d');
+            const datasets = [];
+            
+"""
+            if has_phone:
+                html_content += """
+            // 手机ping数据
+            datasets.push({{
+                label: '手机Ping (ms)',
+                data: networkPhonePing,
+                borderColor: 'rgb(255, 99, 132)',
+                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.4,
+                yAxisID: 'y'
+            }});
+"""
+            
+            if has_pc:
+                html_content += """
+            // 电脑ping数据
+            datasets.push({{
+                label: '电脑Ping (ms)',
+                data: networkPcPing,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.4,
+                yAxisID: 'y'
+            }});
+"""
+            
+            html_content += """
+            const networkChart = new Chart(ctx2, {{
+                type: 'line',
+                data: {{
+                    labels: networkTimestamps,
+                    datasets: datasets
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false
+                    }},
+                    plugins: {{
+                        legend: {{
+                            display: true,
+                            position: 'top'
+                        }}
+                    }},
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: '时间戳'
+                            }}
+                        }},
+                        y: {{
+                            title: {{
+                                display: true,
+                                text: 'Ping延迟 (ms)'
+                            }},
+                            beginAtZero: true
+                        }}
+                    }}
+                }}
+            }});
+        }}
+"""
+        
+        html_content += """
         const frameData = __FRAME_DATA__;
         let currentFrameIndex = 0;
         const annotatedFPS = __ANNOTATED_FPS__;

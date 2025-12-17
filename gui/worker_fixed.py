@@ -287,3 +287,4 @@ class AnalysisWorker(QThread):
         return True, f"分析完成！\n报告文件夹: {report_dir}", str(report_dir)
 
 
+

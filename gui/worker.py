@@ -19,7 +19,7 @@ class AnalysisWorker(QThread):
     log_message = pyqtSignal(str)
     finished = pyqtSignal(bool, str, str)
     
-    def __init__(self, video_path, app_roi, use_gpu, resize_ratio, frame_limit, frame_step, treal_format, output_dir=None):
+    def __init__(self, video_path, app_roi, use_gpu, resize_ratio, frame_limit, frame_step, treal_format, output_dir=None, phone_log=None, pc_log=None):
         super().__init__()
         self.logger = get_logger('AnalysisWorker')
         self.video_path = video_path
@@ -30,9 +30,11 @@ class AnalysisWorker(QThread):
         self.frame_step = frame_step
         self.treal_format = treal_format  # 'standard' 或 'digits'
         self.output_dir = Path(output_dir) if output_dir else Path.home() / "Desktop" / "视频延时分析"
+        self.phone_log = phone_log  # 手机网络日志路径
+        self.pc_log = pc_log  # 电脑网络日志路径
         self.ocr_engine = None
         
-        self.logger.info(f"分析worker已创建: video={Path(video_path).name}, gpu={use_gpu}, ratio={resize_ratio}, limit={frame_limit}, step={frame_step}, format={treal_format}")
+        self.logger.info(f"分析worker已创建: video={Path(video_path).name}, gpu={use_gpu}, ratio={resize_ratio}, limit={frame_limit}, step={frame_step}, format={treal_format}, phone_log={phone_log is not None}, pc_log={pc_log is not None}")
     
     def run(self):
         try:
@@ -490,6 +492,30 @@ class AnalysisWorker(QThread):
         self.log_message.emit("CSV报告已保存: " + csv_path.name)
         self.logger.info(f"CSV已保存: {csv_path}")
         
+        # 处理网络日志匹配
+        merged_csv_path = None
+        if self.phone_log or self.pc_log:
+            self.log_message.emit("正在匹配网络日志...")
+            self.logger.info("开始网络数据匹配")
+            try:
+                from core.network_matcher import match_network_logs
+                
+                merged_csv_path = report_dir / f"{report_folder_name}_with_network.csv"
+                match_network_logs(
+                    video_csv=str(csv_path),
+                    phone_csv=self.phone_log,
+                    pc_csv=self.pc_log,
+                    output_csv=str(merged_csv_path),
+                    tolerance=1.0
+                )
+                
+                self.log_message.emit(f"网络数据匹配完成: {merged_csv_path.name}")
+                self.logger.info(f"网络数据已匹配: {merged_csv_path}")
+            except Exception as e:
+                self.log_message.emit(f"⚠️ 网络数据匹配失败: {str(e)}")
+                self.logger.error(f"网络匹配失败: {e}")
+                merged_csv_path = None
+        
         # 生成标定视频 - 完全复制temp_delay_gui.py的实现
         self.log_message.emit("正在生成标定视频...")
         self.logger.info(f"开始生成标定视频，annotated_frames数量: {len(annotated_frames)}")
@@ -607,7 +633,8 @@ class AnalysisWorker(QThread):
             video_filename=f"{report_folder_name}.mp4",
             fps=fps,
             frame_step=frame_step,
-            output_path=str(html_path)
+            output_path=str(html_path),
+            network_csv=str(merged_csv_path) if merged_csv_path else None
         )
         self.log_message.emit("HTML报告已保存: " + html_path.name)
         self.logger.info(f"HTML报告已保存: {html_path}")

@@ -123,3 +123,4 @@ def log_exception(msg):
         _log_manager = init_logger()
     _log_manager.exception(msg)
 
+

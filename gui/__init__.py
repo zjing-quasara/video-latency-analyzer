@@ -8,3 +8,4 @@ from .worker import AnalysisWorker
 __all__ = ['MainWindow', 'AnalysisWorker']
 
 
+

@@ -144,6 +144,8 @@ class MainWindow(QMainWindow):
         self.use_gpu = True  # 默认使用GPU
         self.resize_ratio = 0.5
         self.report_folder = None  # 保存最后生成的报告文件夹路径
+        self.phone_log_path = None  # 手机网络日志路径
+        self.pc_log_path = None  # 电脑网络日志路径
         
         # 默认输出路径（桌面）
         from config import DEFAULT_OUTPUT_DIR
@@ -269,6 +271,63 @@ class MainWindow(QMainWindow):
         param_group.setLayout(param_layout)
         layout.addWidget(param_group)
         
+        # 网络监控日志导入
+        network_group = QGroupBox("网络监控日志")
+        network_layout = QVBoxLayout()
+        
+        # 单选按钮（是/否）
+        radio_layout = QHBoxLayout()
+        radio_layout.addWidget(QLabel("  "))  # 缩进
+        self.radio_network_yes = QRadioButton("是")
+        self.radio_network_no = QRadioButton("否")
+        self.radio_network_no.setChecked(True)  # 默认选"否"
+        radio_layout.addWidget(self.radio_network_yes)
+        radio_layout.addWidget(self.radio_network_no)
+        radio_layout.addStretch()
+        network_layout.addLayout(radio_layout)
+        
+        # 文件选择区域（默认隐藏）
+        self.network_file_widget = QWidget()
+        file_widget_layout = QVBoxLayout()
+        
+        # 手机日志
+        phone_layout = QHBoxLayout()
+        phone_layout.addWidget(QLabel("  手机日志:"))
+        self.phone_log_input = QLineEdit()
+        self.phone_log_input.setReadOnly(True)
+        self.phone_log_input.setPlaceholderText("未选择")
+        self.btn_phone_log = QPushButton("浏览...")
+        self.btn_phone_log.clicked.connect(self.select_phone_log)
+        phone_layout.addWidget(self.phone_log_input, 1)
+        phone_layout.addWidget(self.btn_phone_log)
+        file_widget_layout.addLayout(phone_layout)
+        
+        # 电脑日志
+        pc_layout = QHBoxLayout()
+        pc_layout.addWidget(QLabel("  电脑日志:"))
+        self.pc_log_input = QLineEdit()
+        self.pc_log_input.setReadOnly(True)
+        self.pc_log_input.setPlaceholderText("未选择（可选）")
+        self.btn_pc_log = QPushButton("浏览...")
+        self.btn_pc_log.clicked.connect(self.select_pc_log)
+        self.label_optional = QLabel("(可选)")
+        pc_layout.addWidget(self.pc_log_input, 1)
+        pc_layout.addWidget(self.btn_pc_log)
+        pc_layout.addWidget(self.label_optional)
+        file_widget_layout.addLayout(pc_layout)
+        
+        self.network_file_widget.setLayout(file_widget_layout)
+        self.network_file_widget.hide()  # 默认隐藏
+        
+        network_layout.addWidget(self.network_file_widget)
+        network_group.setLayout(network_layout)
+        layout.addWidget(network_group)
+        
+        # 信号连接：选"是"时显示，选"否"时隐藏
+        self.radio_network_yes.toggled.connect(
+            lambda checked: self.network_file_widget.setVisible(checked)
+        )
+        
         # 开始分析
         self.btn_start = QPushButton("开始分析")
         self.btn_start.clicked.connect(self.start_analysis)
@@ -375,6 +434,26 @@ class MainWindow(QMainWindow):
             self.output_label.setText(str(self.output_dir))
             self.append_log(f"已设置输出路径: {self.output_dir}")
     
+    def select_phone_log(self):
+        """选择手机网络日志"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择手机网络日志", str(Path.home()), "CSV文件 (*.csv)"
+        )
+        if file_path:
+            self.phone_log_path = file_path
+            self.phone_log_input.setText(Path(file_path).name)
+            self.append_log(f"已选择手机日志: {Path(file_path).name}")
+    
+    def select_pc_log(self):
+        """选择电脑网络日志"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择电脑网络日志", str(Path.home()), "CSV文件 (*.csv)"
+        )
+        if file_path:
+            self.pc_log_path = file_path
+            self.pc_log_input.setText(Path(file_path).name)
+            self.append_log(f"已选择电脑日志: {Path(file_path).name}")
+    
     def calibrate_roi(self):
         """标定ROI"""
         if not self.video_path:
@@ -457,12 +536,24 @@ class MainWindow(QMainWindow):
             frame_limit = self.frame_limit_spin.value()
             mode_desc = f"分析前 {frame_limit} 帧"
         
+        # 检查网络日志
+        enable_network = self.radio_network_yes.isChecked()
+        phone_log = self.phone_log_path if enable_network else None
+        pc_log = self.pc_log_path if enable_network else None
+        
         # 日志输出
         self.logger.info(f"开始分析: frame_limit={frame_limit}, frame_step={frame_step}, treal_format={treal_format}")
         self.append_log(f"分析模式: {mode_desc}")
         self.append_log(f"抽帧间隔: 每{frame_step}帧")
         format_name = "标准格式" if treal_format == "standard" else "纯数字格式"
         self.append_log(f"T_real格式: {format_name}")
+        
+        if enable_network:
+            if phone_log:
+                self.append_log(f"手机日志: {Path(phone_log).name}")
+            if pc_log:
+                self.append_log(f"电脑日志: {Path(pc_log).name}")
+            self.append_log("将生成网络关联分析报告")
         
         self.worker = AnalysisWorker(
             self.video_path, 
@@ -472,7 +563,9 @@ class MainWindow(QMainWindow):
             frame_limit,
             frame_step,
             treal_format,
-            self.output_dir  # 传递输出路径
+            self.output_dir,  # 传递输出路径
+            phone_log,  # 传递手机日志路径
+            pc_log  # 传递电脑日志路径
         )
         self.worker.progress.connect(self.update_progress)
         self.worker.log_message.connect(self.append_log)

@@ -190,8 +190,8 @@ class SmartCalibrator:
             elif processed.shape[2] == 3:
                 processed = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
             
-            # OCR识别
-            result = self.ocr_engine.ocr.ocr(processed, cls=False)
+            # OCR识别（不传cls参数，兼容不同版本）
+            result = self.ocr_engine.ocr.ocr(processed)
             if not result or not result[0]:
                 return None
             

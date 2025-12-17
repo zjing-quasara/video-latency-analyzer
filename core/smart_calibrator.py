@@ -52,14 +52,14 @@ class SmartCalibrator:
             elif level == 'warning':
                 self.logger.warning(msg)
     
-    def calibrate(self, video_path: str, app_roi: Tuple, max_frames: int = 10) -> CalibrationResult:
+    def calibrate(self, video_path: str, app_roi: Tuple, max_frames: int = 3) -> CalibrationResult:
         """
         自动校准 - 使用前N帧找到最佳识别参数
         
         Args:
             video_path: 视频路径
             app_roi: T_app 区域 (x1, y1, x2, y2)
-            max_frames: 最多使用多少帧进行校准（默认10帧）
+            max_frames: 最多使用多少帧进行校准（默认3帧，已优化）
             
         Returns:
             校准结果
@@ -98,13 +98,14 @@ class SmartCalibrator:
                 x1, y1, x2, y2 = app_roi
                 app_img = frame[y1:y2, x1:x2].copy()
                 
-                # 尝试所有策略
-                for strategy in ['original', 'contrast', 'sharpen', 'grayscale', 
-                               'binary', 'binary_inv', 'denoise']:
+                # 尝试关键策略（优化：只测试最有效的4个）
+                for strategy in ['contrast', 'sharpen', 'binary', 'grayscale']:
                     result = self._test_strategy(app_img, strategy, 'T_app')
                     if result:
                         app_results[strategy]['success'] += 1
                         app_results[strategy]['confidence'].append(result['confidence'])
+                        # 早停优化：找到成功策略就不再测试其他
+                        break
             
             # 测试 T_real 识别（自动检测区域）
             real_roi = self._quick_detect_real_roi(frame)
@@ -112,12 +113,13 @@ class SmartCalibrator:
                 x1, y1, x2, y2 = real_roi
                 real_img = frame[y1:y2, x1:x2].copy()
                 
-                for strategy in ['original', 'contrast', 'sharpen', 'grayscale',
-                               'binary', 'binary_inv', 'denoise']:
+                for strategy in ['contrast', 'sharpen', 'binary', 'grayscale']:
                     result = self._test_strategy(real_img, strategy, 'T_real')
                     if result:
                         real_results[strategy]['success'] += 1
                         real_results[strategy]['confidence'].append(result['confidence'])
+                        # 早停优化：找到成功策略就不再测试其他
+                        break
         
         cap.release()
         

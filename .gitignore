@@ -86,3 +86,10 @@ inference/
 quick_*.bat
 start_*.bat
 
+# ===== 文档限制 =====
+# 只保留必要的md文件，禁止随意创建文档
+*.md
+!README.md
+!docs/使用说明.md
+!CHANGELOG*.md
+

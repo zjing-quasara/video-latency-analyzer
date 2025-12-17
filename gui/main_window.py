@@ -13,10 +13,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
-from core import ROIDetector
 from .worker import AnalysisWorker
 from config import REPORT_CONFIG
 from utils.logger import get_logger, get_log_file
+import json
 
 
 class ROIAdjustDialog(QDialog):
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         self.video_path = None
         self.video_total_frames = 0  # 视频总帧数
         self.video_fps = 0  # 视频FPS
-        self.roi_detector = ROIDetector()
+        self.roi_config_path = Path("data/config/roi_config.json")
         self.worker = None
         self.use_gpu = True  # 默认使用GPU
         self.resize_ratio = 0.5
@@ -154,6 +154,62 @@ class MainWindow(QMainWindow):
         
         self.logger.info("主窗口初始化")
         self.init_ui()
+    
+    def get_app_roi(self):
+        """获取保存的APP ROI配置"""
+        try:
+            if self.roi_config_path.exists():
+                with open(self.roi_config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get('app_roi')
+        except Exception as e:
+            self.logger.warning(f"读取ROI配置失败: {e}")
+        return None
+    
+    def set_app_roi(self, roi):
+        """保存APP ROI配置"""
+        try:
+            config = {}
+            if self.roi_config_path.exists():
+                with open(self.roi_config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            config['app_roi'] = roi
+            self.roi_config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.roi_config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存ROI配置失败: {e}")
+    
+    def save_video_dir(self, video_dir):
+        """保存最后使用的视频目录"""
+        try:
+            config = {}
+            if self.roi_config_path.exists():
+                with open(self.roi_config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            config['last_video_dir'] = video_dir
+            with open(self.roi_config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"保存视频目录失败: {e}")
+    
+    def get_last_video_dir(self):
+        """获取最后使用的视频目录"""
+        try:
+            if self.roi_config_path.exists():
+                with open(self.roi_config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get('last_video_dir')
+        except Exception as e:
+            self.logger.warning(f"读取视频目录失败: {e}")
+        return None
+    
+    @staticmethod
+    def get_default_app_roi(w, h):
+        """获取默认APP ROI位置（左上角区域）"""
+        roi_w = int(w * 0.3)
+        roi_h = int(h * 0.15)
+        return (10, 10, roi_w, roi_h)
     
     def init_ui(self):
         self.setWindowTitle("视频延时分析工具")
@@ -185,7 +241,7 @@ class MainWindow(QMainWindow):
         
         # ROI状态
         roi_layout = QHBoxLayout()
-        app_roi = self.roi_detector.get_app_roi()
+        app_roi = self.get_app_roi()
         roi_text = f"T_app ROI: {app_roi}" if app_roi else "T_app ROI: 未配置"
         self.roi_status_label = QLabel(roi_text)
         btn_calibrate = QPushButton("标定 T_app")
@@ -365,7 +421,7 @@ class MainWindow(QMainWindow):
     def select_video(self):
         """选择视频"""
         # 获取上次视频目录
-        last_dir = self.roi_detector.get_last_video_dir()
+        last_dir = self.get_last_video_dir()
         if not last_dir or not Path(last_dir).exists():
             last_dir = str(Path.home())
         
@@ -407,7 +463,7 @@ class MainWindow(QMainWindow):
             
             # 保存视频目录
             video_dir = str(Path(file_path).parent)
-            self.roi_detector.save_config(last_video_dir=video_dir)
+            self.save_video_dir(video_dir)
     
     def on_full_analysis_changed(self, state):
         """全量分析选项变化"""
@@ -472,24 +528,24 @@ class MainWindow(QMainWindow):
         h, w = frame.shape[:2]
         
         # 获取初始ROI
-        app_roi = self.roi_detector.get_app_roi()
+        app_roi = self.get_app_roi()
         if app_roi:
             initial_roi = app_roi
             self.append_log("使用上次保存的 ROI 位置")
         else:
-            initial_roi = ROIDetector.get_default_app_roi(w, h)
+            initial_roi = self.get_default_app_roi(w, h)
             self.append_log("使用默认 ROI 位置")
         
         # 打开调整对话框
         dialog = ROIAdjustDialog(frame, initial_roi, self)
         if dialog.exec_() == QDialog.Accepted and dialog.confirmed:
             roi = dialog.get_roi()
-            self.roi_detector.set_app_roi(roi)
+            self.set_app_roi(roi)
             self.roi_status_label.setText(f"T_app ROI: {roi}")
             
             # 保存配置（包括上次视频目录）
             video_dir = str(Path(self.video_path).parent) if self.video_path else None
-            self.roi_detector.save_config(last_video_dir=video_dir)
+            self.save_video_dir(video_dir)
             
             self.update_start_button()
             self.append_log(f"T_app ROI 已更新: {roi}")
@@ -508,12 +564,12 @@ class MainWindow(QMainWindow):
     def update_start_button(self):
         """更新开始按钮状态"""
         has_video = self.video_path is not None
-        has_roi = self.roi_detector.get_app_roi() is not None
+        has_roi = self.get_app_roi() is not None
         self.btn_start.setEnabled(has_video and has_roi)
     
     def start_analysis(self):
         """开始分析"""
-        if not self.video_path or not self.roi_detector.get_app_roi():
+        if not self.video_path or not self.get_app_roi():
             return
         
         self.btn_start.setEnabled(False)
@@ -523,7 +579,7 @@ class MainWindow(QMainWindow):
         self.log_text.clear()
         
         # 获取分析参数
-        app_roi = self.roi_detector.get_app_roi()
+        app_roi = self.get_app_roi()
         frame_step = self.frame_step_spin.currentData()
         treal_format = self.treal_format_combo.currentData()
         

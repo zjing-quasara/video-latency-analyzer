@@ -288,3 +288,4 @@ class AnalysisWorker(QThread):
 
 
 
+

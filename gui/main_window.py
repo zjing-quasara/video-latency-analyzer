@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QTextEdit, QFileDialog, QMessageBox, QDialog, QSlider,
-    QGroupBox, QCheckBox, QComboBox, QSpinBox
+    QGroupBox, QCheckBox, QComboBox, QSpinBox, QRadioButton, QLineEdit
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap

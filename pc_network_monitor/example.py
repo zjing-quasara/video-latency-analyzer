@@ -31,3 +31,4 @@ print(f"\n平均延迟: {stats['avg_ping_ms']:.1f}ms")
 print(f"丢包率: {stats['packet_loss_rate']:.1%}")
 
 
+

@@ -2,6 +2,7 @@
 视频延时分析工具 - 启动入口
 """
 import sys
+import os
 import traceback
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from gui import MainWindow
@@ -41,6 +42,33 @@ def main():
             raise
         
         logger.info("所有依赖检查通过")
+        
+        # 修复Qt平台插件问题
+        logger.info("配置Qt环境...")
+        try:
+            # 获取PyQt5的安装路径
+            import PyQt5
+            pyqt5_path = os.path.dirname(PyQt5.__file__)
+            qt_plugin_path = os.path.join(pyqt5_path, 'Qt5', 'plugins')
+            
+            # 设置Qt插件路径
+            if os.path.exists(qt_plugin_path):
+                os.environ['QT_PLUGIN_PATH'] = qt_plugin_path
+                logger.info(f"✓ Qt插件路径已设置: {qt_plugin_path}")
+            else:
+                # 尝试备用路径
+                qt_plugin_path = os.path.join(pyqt5_path, 'Qt', 'plugins')
+                if os.path.exists(qt_plugin_path):
+                    os.environ['QT_PLUGIN_PATH'] = qt_plugin_path
+                    logger.info(f"✓ Qt插件路径已设置: {qt_plugin_path}")
+                else:
+                    logger.warning(f"⚠ 未找到Qt插件路径，将使用系统默认路径")
+            
+            # 设置Qt平台插件环境变量（备用方案）
+            os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugin_path if os.path.exists(qt_plugin_path) else ''
+            
+        except Exception as e:
+            logger.warning(f"配置Qt环境时出现警告: {e}")
         
         # 创建应用
         app = QApplication(sys.argv)

@@ -73,9 +73,12 @@ class ReportGenerator:
         Returns:
             网络数据字典
         """
+        print(f"[DEBUG] 尝试加载网络数据: {network_csv}")
         if not network_csv or not Path(network_csv).exists():
+            print(f"[DEBUG] 网络数据文件不存在或路径为空")
             return None
         
+        print(f"[DEBUG] 网络数据文件存在，开始读取...")
         data = {
             'timestamps': [],
             'phone_ping': [],
@@ -87,7 +90,9 @@ class ReportGenerator:
         try:
             with open(network_csv, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
+                row_count = 0
                 for row in reader:
+                    row_count += 1
                     data['timestamps'].append(float(row['timestamp']))
                     
                     # 手机ping
@@ -102,9 +107,14 @@ class ReportGenerator:
                         pc_ping = row.get('pc_ping_ms')
                         data['pc_ping'].append(float(pc_ping) if pc_ping and pc_ping != '' else None)
             
-            return data if (data['has_phone'] or data['has_pc']) else None
+            print(f"[DEBUG] 读取了 {row_count} 行数据，has_phone={data['has_phone']}, has_pc={data['has_pc']}")
+            result = data if (data['has_phone'] or data['has_pc']) else None
+            print(f"[DEBUG] 返回结果: {'有网络数据' if result else '无网络数据'}")
+            return result
         except Exception as e:
-            print(f"加载网络数据失败: {e}")
+            print(f"[ERROR] 加载网络数据失败: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     @classmethod
@@ -183,7 +193,8 @@ class ReportGenerator:
             max_delay=stats['max_delay'],
             has_network=has_network,
             has_phone=network_data['has_phone'] if has_network else False,
-            has_pc=network_data['has_pc'] if has_network else False
+            has_pc=network_data['has_pc'] if has_network else False,
+            network_data=network_data
         )
         
         # 替换占位符
@@ -192,6 +203,10 @@ class ReportGenerator:
         html_content = html_content.replace('__CHART_TIMES__', chart_times_json)
         html_content = html_content.replace('__FRAME_DATA__', frame_data_json)
         html_content = html_content.replace('__ANNOTATED_FPS__', str(annotated_fps))
+        html_content = html_content.replace('__HAS_NETWORK__', 'true' if has_network else 'false')
+        html_content = html_content.replace('__NETWORK_TIMESTAMPS__', network_timestamps_json)
+        html_content = html_content.replace('__NETWORK_PHONE_PING__', network_phone_ping_json)
+        html_content = html_content.replace('__NETWORK_PC_PING__', network_pc_ping_json)
         html_content = html_content.replace('__NETWORK_TIMESTAMPS__', network_timestamps_json)
         html_content = html_content.replace('__NETWORK_PHONE_PING__', network_phone_ping_json)
         html_content = html_content.replace('__NETWORK_PC_PING__', network_pc_ping_json)
@@ -217,7 +232,8 @@ class ReportGenerator:
         max_delay: float,
         has_network: bool = False,
         has_phone: bool = False,
-        has_pc: bool = False
+        has_pc: bool = False,
+        network_data: dict = None
     ) -> str:
         """
         生成完整的HTML模板
@@ -375,6 +391,7 @@ class ReportGenerator:
         .status-ok {{ color: #27ae60; font-weight: bold; }}
         .status-fail {{ color: #e74c3c; font-weight: bold; }}
         .time-wrong {{ color: #e74c3c; background-color: #ffe6e6; font-weight: bold; }}
+        .error-warning {{ color: #e67e22; font-size: 0.9em; font-style: italic; }}
         
         .tip {{ 
             background: #fff9e6; 
@@ -451,23 +468,34 @@ class ReportGenerator:
                 <strong>交互提示：</strong> 鼠标悬停在曲线或表格上，左侧视频会自动定位到对应帧
             </div>
             
-            <h2>1. 延时曲线</h2>
+            <h2>1. 延时分析</h2>
             <div class="section">
                 <canvas id="delayChart"></canvas>
             </div>
 """
         
-        # 如果有网络数据，添加网络监控图表
-        if has_network:
-            html_content += """
-            <h2>2. 网络监控</h2>
-            <div class="section">
-                <canvas id="networkChart"></canvas>
-            </div>
+        # 网络监控独立图表（可选，如果需要更详细的网络分析）
+        section_number = 2
+        
+        # 表格标题根据是否有网络数据动态调整
+        table_headers = """
+                            <th>帧号</th>
+                            <th>视频时间(s)</th>
+                            <th>T_app</th>
+                            <th>T_real</th>
+                            <th>延时(ms)</th>
+                            <th>状态</th>
 """
-            section_number = 3
-        else:
-            section_number = 2
+        if has_network:
+            table_headers += """
+                            <th>手机Ping</th>
+                            <th>📶</th>
+                            <th>电脑Ping</th>
+                            <th>📶</th>
+"""
+        table_headers += """
+                            <th>异常原因</th>
+"""
         
         html_content += f"""
             <h2>{section_number}. 详细数据</h2>
@@ -475,12 +503,7 @@ class ReportGenerator:
                 <table>
                     <thead>
                         <tr>
-                            <th>帧号</th>
-                            <th>视频时间(s)</th>
-                            <th>T_app</th>
-                            <th>T_real</th>
-                            <th>延时(ms)</th>
-                            <th>状态</th>
+{table_headers}
                         </tr>
                     </thead>
                     <tbody>
@@ -500,7 +523,12 @@ class ReportGenerator:
             
             delay_display = r['delay_ms'] if r['delay_ms'] is not None else 'N/A'
             
-            html_content += f"""
+            # 获取异常原因
+            error_reason = r.get('error_reason', '') or ''
+            error_class = "error-warning" if error_reason else ""
+            
+            # 构建表格行
+            row_html = f"""
             <tr onmouseenter="seekVideo({i}, this)" data-time="{video_time}" data-frame-index="{i}">
                 <td>{r['frame_idx']}</td>
                 <td>{video_time_str}</td>
@@ -508,8 +536,52 @@ class ReportGenerator:
                 <td class="{real_time_class}">{real_time_display}</td>
                 <td>{delay_display}</td>
                 <td class="{status_class}">{r['status']}</td>
+"""
+            
+            # 如果有网络数据，添加网络列
+            if has_network and network_data:
+                # 从网络数据中获取对应的ping值
+                phone_ping = network_data['phone_ping'][i] if i < len(network_data['phone_ping']) else None
+                pc_ping = network_data['pc_ping'][i] if i < len(network_data['pc_ping']) else None
+                
+                # 手机Ping和状态
+                if phone_ping is not None:
+                    phone_display = f"{phone_ping:.0f}ms"
+                    if phone_ping < 100:
+                        phone_status = '<span style="color: #27ae60;">🟢</span>'
+                    elif phone_ping < 200:
+                        phone_status = '<span style="color: #f39c12;">🟡</span>'
+                    else:
+                        phone_status = '<span style="color: #e74c3c;">🔴</span>'
+                else:
+                    phone_display = 'N/A'
+                    phone_status = '<span style="color: #e74c3c;">🔴</span>'
+                
+                # 电脑Ping和状态
+                if pc_ping is not None:
+                    pc_display = f"{pc_ping:.0f}ms"
+                    if pc_ping < 100:
+                        pc_status = '<span style="color: #27ae60;">🟢</span>'
+                    elif pc_ping < 200:
+                        pc_status = '<span style="color: #f39c12;">🟡</span>'
+                    else:
+                        pc_status = '<span style="color: #e74c3c;">🔴</span>'
+                else:
+                    pc_display = 'N/A'
+                    pc_status = '<span style="color: #e74c3c;">🔴</span>'
+                
+                row_html += f"""
+                <td style="font-family: Consolas, monospace;">{phone_display}</td>
+                <td>{phone_status}</td>
+                <td style="font-family: Consolas, monospace;">{pc_display}</td>
+                <td>{pc_status}</td>
+"""
+            
+            row_html += f"""
+                <td class="{error_class}">{error_reason if error_reason else '-'}</td>
             </tr>
 """
+            html_content += row_html
         
         html_content += """
                     </tbody>
@@ -617,119 +689,60 @@ class ReportGenerator:
         const chartFrames = __CHART_FRAMES__;
         const chartDelays = __CHART_DELAYS__;
         const chartTimes = __CHART_TIMES__;
-        
-        if (chartFrames.length > 0) {{
-            const ctx = document.getElementById('delayChart').getContext('2d');
-            const delayChart = new Chart(ctx, {{
-                type: 'line',
-                data: {{
-                    labels: chartFrames,
-                    datasets: [{{
-                        label: '延时 (ms)',
-                        data: chartDelays,
-                        borderColor: 'rgb(75, 192, 192)',
-                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 0,
-                        tension: 0.4
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    interaction: {{
-                        mode: 'index',
-                        intersect: false
-                    }},
-                    plugins: {{
-                        legend: {{
-                            display: true,
-                            position: 'top'
-                        }}
-                    }},
-                    scales: {{
-                        x: {{
-                            title: {{
-                                display: true,
-                                text: '帧号'
-                            }}
-                        }},
-                        y: {{
-                            title: {{
-                                display: true,
-                                text: '延时 (ms)'
-                            }}
-                        }}
-                    }},
-                    onHover: function(event, activeElements) {{
-                        if (activeElements.length > 0) {{
-                            const idx = activeElements[0].index;
-                            console.log('[Chart hover] idx=', idx);
-                            seekVideo(idx, null);
-                        }}
-                    }},
-                    onClick: function(event, activeElements) {{
-                        if (activeElements.length > 0) {{
-                            const idx = activeElements[0].index;
-                            console.log('[Chart click] idx=', idx);
-                            seekVideo(idx, null);
-                            video.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                        }}
-                    }}
-                }}
-            }});
-        }}
-"""
-        
-        # 如果有网络数据，添加网络图表的JavaScript代码
-        if has_network:
-            html_content += """
-        // 网络监控图表
+        const hasNetwork = __HAS_NETWORK__;
         const networkTimestamps = __NETWORK_TIMESTAMPS__;
         const networkPhonePing = __NETWORK_PHONE_PING__;
         const networkPcPing = __NETWORK_PC_PING__;
         
-        if (networkTimestamps.length > 0) {{
-            const ctx2 = document.getElementById('networkChart').getContext('2d');
-            const datasets = [];
+        if (chartFrames.length > 0) {{
+            const ctx = document.getElementById('delayChart').getContext('2d');
             
-"""
-            if has_phone:
-                html_content += """
-            // 手机ping数据
-            datasets.push({{
-                label: '手机Ping (ms)',
-                data: networkPhonePing,
-                borderColor: 'rgb(255, 99, 132)',
-                backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                borderWidth: 2,
+            // 准备数据集
+            const datasets = [{{
+                label: '视频延时 (ms)',
+                data: chartDelays,
+                borderColor: '#27ae60',
+                backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                borderWidth: 3,
                 pointRadius: 0,
+                pointHoverRadius: 0,
                 tension: 0.4,
                 yAxisID: 'y'
-            }});
-"""
+            }}];
             
-            if has_pc:
-                html_content += """
-            // 电脑ping数据
-            datasets.push({{
-                label: '电脑Ping (ms)',
-                data: networkPcPing,
-                borderColor: 'rgb(54, 162, 235)',
-                backgroundColor: 'rgba(54, 162, 235, 0.2)',
-                borderWidth: 2,
-                pointRadius: 0,
-                tension: 0.4,
-                yAxisID: 'y'
-            }});
-"""
+            // 如果有网络数据，添加网络Ping曲线
+            if (hasNetwork && networkPhonePing.length > 0) {{
+                datasets.push({{
+                    label: '手机Ping (ms)',
+                    data: networkPhonePing,
+                    borderColor: '#e74c3c',
+                    backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    tension: 0.4,
+                    yAxisID: 'y1'
+                }});
+            }}
             
-            html_content += """
-            const networkChart = new Chart(ctx2, {{
+            if (hasNetwork && networkPcPing.length > 0) {{
+                datasets.push({{
+                    label: '电脑Ping (ms)',
+                    data: networkPcPing,
+                    borderColor: '#3498db',
+                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    tension: 0.4,
+                    yAxisID: 'y1'
+                }});
+            }}
+            
+            const chartConfig = {{
                 type: 'line',
                 data: {{
-                    labels: networkTimestamps,
+                    labels: chartFrames,
                     datasets: datasets
                 }},
                 options: {{
@@ -743,25 +756,74 @@ class ReportGenerator:
                         legend: {{
                             display: true,
                             position: 'top'
+                        }},
+                        tooltip: {{
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            padding: 12,
+                            titleFont: {{ size: 13, weight: 'bold' }},
+                            bodyFont: {{ size: 12 }},
+                            bodySpacing: 6
                         }}
                     }},
                     scales: {{
                         x: {{
                             title: {{
                                 display: true,
-                                text: '时间戳'
+                                text: '帧号',
+                                font: {{ size: 13, weight: 'bold' }}
                             }}
                         }},
                         y: {{
+                            type: 'linear',
+                            position: 'left',
                             title: {{
                                 display: true,
-                                text: 'Ping延迟 (ms)'
+                                text: '延时 (ms)',
+                                color: '#27ae60',
+                                font: {{ size: 13, weight: 'bold' }}
                             }},
-                            beginAtZero: true
+                            ticks: {{
+                                color: '#27ae60'
+                            }}
+                        }}
+                    }},
+                    onHover: function(event, activeElements) {{
+                        if (activeElements.length > 0) {{
+                            const idx = activeElements[0].index;
+                            seekVideo(idx, null);
+                        }}
+                    }},
+                    onClick: function(event, activeElements) {{
+                        if (activeElements.length > 0) {{
+                            const idx = activeElements[0].index;
+                            seekVideo(idx, null);
+                            video.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                         }}
                     }}
                 }}
-            }});
+            }};
+            
+            // 如果有网络数据，添加右Y轴
+            if (hasNetwork && (networkPhonePing.length > 0 || networkPcPing.length > 0)) {{
+                chartConfig.options.scales.y1 = {{
+                    type: 'linear',
+                    position: 'right',
+                    title: {{
+                        display: true,
+                        text: 'Ping延迟 (ms)',
+                        color: '#e74c3c',
+                        font: {{ size: 13, weight: 'bold' }}
+                    }},
+                    ticks: {{
+                        color: '#e74c3c'
+                    }},
+                    grid: {{
+                        drawOnChartArea: false
+                    }}
+                }};
+            }}
+            
+            const delayChart = new Chart(ctx, chartConfig);
         }}
 """
         

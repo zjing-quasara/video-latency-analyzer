@@ -597,6 +597,7 @@ class AnalysisWorker(QThread):
         tbody tr.selected {{ background-color: #d4e9f7; }}
         .status-ok {{ color: #27ae60; font-weight: bold; }}
         .status-fail {{ color: #e74c3c; font-weight: bold; }}
+        .error-warning {{ color: #e67e22; font-size: 0.9em; font-style: italic; }}
         
         .tip {{ 
             background: #fff9e6; 
@@ -685,6 +686,7 @@ class AnalysisWorker(QThread):
                             <th>T_real</th>
                             <th>延时(ms)</th>
                             <th>状态</th>
+                            <th>异常原因</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -697,6 +699,8 @@ class AnalysisWorker(QThread):
             app_time_display = r['app_time_str'] or 'N/A'
             real_time_display = r['real_time_str'] or 'N/A'
             delay_display = r['delay_ms'] if r['delay_ms'] is not None else 'N/A'
+            error_reason = r.get('error_reason', '') or ''
+            error_class = "error-warning" if error_reason else ""
             
             html_content += f"""
             <tr onmouseenter="seekVideo({i}, this)" data-time="{video_time}" data-frame-index="{i}">
@@ -706,6 +710,7 @@ class AnalysisWorker(QThread):
                 <td>{real_time_display}</td>
                 <td>{delay_display}</td>
                 <td class="{status_class}">{r['status']}</td>
+                <td class="{error_class}">{error_reason if error_reason else '-'}</td>
             </tr>
 """
         

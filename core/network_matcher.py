@@ -73,11 +73,16 @@ class NetworkMatcher:
             reader = csv.DictReader(f)
             for row in reader:
                 try:
+                    # 兼容两种时间戳列名: timestamp 和 video_time_s
+                    timestamp_value = row.get('timestamp') or row.get('video_time_s')
+                    if not timestamp_value:
+                        continue
+                    
                     data.append({
-                        'timestamp': float(row['timestamp']),
+                        'timestamp': float(timestamp_value),
                         'datetime': row.get('datetime', ''),
-                        'T_app': row.get('T_app', ''),
-                        'T_real': row.get('T_real', ''),
+                        'T_app': row.get('app_time_str', row.get('T_app', '')),
+                        'T_real': row.get('real_time_str', row.get('T_real', '')),
                         'delay_ms': float(row['delay_ms']) if row.get('delay_ms') else None
                     })
                 except (ValueError, KeyError) as e:

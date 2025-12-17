@@ -5,10 +5,14 @@ import cv2
 import csv
 import re
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 from PyQt5.QtCore import QThread, pyqtSignal
 from paddleocr import PaddleOCR
+from core.adaptive_ocr import AdaptiveOCREngine
+from core.smart_calibrator import SmartCalibrator
+from core.smart_roi_detector import SmartROIDetector
 from utils.logger import get_logger
 
 
@@ -33,6 +37,9 @@ class AnalysisWorker(QThread):
         self.phone_log = phone_log  # 手机网络日志路径
         self.pc_log = pc_log  # 电脑网络日志路径
         self.ocr_engine = None
+        self.adaptive_ocr = None  # 自适应OCR引擎
+        self.calibrator = None  # 智能校准器
+        self.roi_detector = None  # 智能ROI检测器
         
         self.logger.info(f"分析worker已创建: video={Path(video_path).name}, gpu={use_gpu}, ratio={resize_ratio}, limit={frame_limit}, step={frame_step}, format={treal_format}, phone_log={phone_log is not None}, pc_log={pc_log is not None}")
     
@@ -41,14 +48,41 @@ class AnalysisWorker(QThread):
             self.logger.info("开始视频分析任务")
             
             # 初始化OCR
-            import os
             gpu_mode = '0' if self.use_gpu else '-1'
             os.environ['CUDA_VISIBLE_DEVICES'] = gpu_mode
             self.logger.info(f"OCR GPU模式: {'启用' if self.use_gpu else '禁用'} (CUDA_VISIBLE_DEVICES={gpu_mode})")
             
-            self.ocr_engine = PaddleOCR(lang="en")
+            # 初始化自适应OCR引擎（替代原有OCR）
+            self.log_message.emit("🚀 初始化智能OCR引擎...")
+            self.adaptive_ocr = AdaptiveOCREngine(use_gpu=self.use_gpu, lang="en", logger=self.logger)
+            self.ocr_engine = self.adaptive_ocr.ocr  # 保持兼容性
+            self.logger.info("自适应OCR引擎初始化成功")
+            
+            # 初始化智能校准器
+            self.calibrator = SmartCalibrator(self.adaptive_ocr, logger=self.logger)
+            
+            # 初始化智能ROI检测器
+            self.roi_detector = SmartROIDetector(logger=self.logger)
+            
+            # 🔧 阶段1：自动校准（使用前10帧）
+            self.log_message.emit("🔧 阶段1：智能校准中（分析前10帧，自动寻找最佳参数）...")
+            try:
+                calibration_result = self.calibrator.calibrate(
+                    video_path=self.video_path,
+                    app_roi=self.app_roi,
+                    max_frames=10
+                )
+                self.log_message.emit(
+                    f"✅ 校准完成！T_app策略: {calibration_result.app_strategy}, "
+                    f"T_real策略: {calibration_result.real_strategy}, "
+                    f"成功率: {calibration_result.success_rate:.1%}"
+                )
+            except Exception as e:
+                self.logger.warning(f"自动校准失败，将使用默认策略: {e}")
+                self.log_message.emit("⚠️ 自动校准失败，使用默认策略")
+            
             self.log_message.emit("PaddleOCR 初始化完成")
-            self.logger.info("PaddleOCR 初始化成功")
+            self.logger.info("OCR系统初始化成功")
             
             success, message, report_folder = self.analyze_video()
             self.logger.info(f"分析完成: success={success}, folder={report_folder}")
@@ -60,52 +94,17 @@ class AnalysisWorker(QThread):
             self.finished.emit(False, error_msg, "")
     
     def detect_real_time_roi(self, frame):
-        """动态检测 T_real（改进版，支持泛红屏幕）"""
-        h, w = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        """动态检测 T_real（使用智能ROI检测器）"""
+        if self.roi_detector:
+            # 🚀 使用智能ROI检测器（自适应多策略）
+            return self.roi_detector.detect(frame, exclude_roi=self.app_roi)
         
-        # 尝试多个阈值，找到最佳的
-        thresholds = [30, 50, 70, 90]
-        all_candidates = []
-        
-        for thresh in thresholds:
-            _, th = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY_INV)
-            contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for cnt in contours:
-                x, y, w_box, h_box = cv2.boundingRect(cnt)
-                area = w_box * h_box
-                
-                # 面积筛选
-                if area < 0.05 * w * h or area > 0.5 * w * h:
-                    continue
-                
-                # 宽高比筛选
-                ratio = w_box / (h_box + 1e-6)
-                if ratio < 2.0 or ratio > 6.0:
-                    continue
-                
-                candidate_roi = (x, y, x + w_box, y + h_box)
-                
-                # 计算得分（面积越大，优先级越高）
-                score = area
-                all_candidates.append({
-                    'roi': candidate_roi,
-                    'area': area,
-                    'score': score,
-                    'threshold': thresh
-                })
-        
-        # 选择得分最高的候选
-        if all_candidates:
-            best = max(all_candidates, key=lambda c: c['score'])
-            return best['roi']
-        
+        # 降级方案：简单检测（不应该执行到这里）
         return None
     
     def extract_time_from_roi(self, frame, roi, exclude_roi=None):
         """
-        从 ROI 提取时间
+        从 ROI 提取时间（使用自适应OCR）
         exclude_roi: 要排除的区域（用于避免读取重叠的T_app内容）
         """
         if not roi:
@@ -116,68 +115,35 @@ class AnalysisWorker(QThread):
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
         
-        roi_img = frame[y1:y2, x1:x2].copy()  # copy防止修改原图
+        roi_img = frame[y1:y2, x1:x2].copy()
         if roi_img.size == 0:
             return None
+        
+        # 确定ROI类型
+        roi_type = "T_real" if exclude_roi else "T_app"
         
         # 如果有需要排除的区域（T_app），把它涂黑
         if exclude_roi:
             ex1, ey1, ex2, ey2 = exclude_roi
-            # 转换为roi_img的相对坐标
             rel_x1 = max(0, ex1 - x1)
             rel_y1 = max(0, ey1 - y1)
             rel_x2 = min(roi_img.shape[1], ex2 - x1)
             rel_y2 = min(roi_img.shape[0], ey2 - y1)
             
-            # 检查是否有重叠
             if rel_x1 < rel_x2 and rel_y1 < rel_y2:
-                # 把T_app区域涂黑（避免OCR读到）
                 roi_img[rel_y1:rel_y2, rel_x1:rel_x2] = 0
-                self.logger.debug(f"排除T_app区域: ({rel_x1},{rel_y1})-({rel_x2},{rel_y2})")
         
+        # 缩放（如果需要）
         if self.resize_ratio < 1.0:
-            roi_img = cv2.resize(roi_img, (0, 0), fx=self.resize_ratio, fy=self.resize_ratio, interpolation=cv2.INTER_AREA)
-        roi_rgb = cv2.cvtColor(roi_img, cv2.COLOR_BGR2RGB)
+            roi_img = cv2.resize(roi_img, (0, 0), fx=self.resize_ratio, fy=self.resize_ratio, 
+                               interpolation=cv2.INTER_AREA)
         
-        try:
-            ocr_result = self.ocr_engine.ocr(roi_rgb)
-            if not ocr_result or len(ocr_result) == 0:
-                return None
-            
-            result_list = ocr_result[0] if ocr_result else []
-            if not result_list:
-                return None
-            
-            texts = []
-            for item in result_list:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    text_info = item[1]
-                    if isinstance(text_info, (list, tuple)) and len(text_info) >= 1:
-                        texts.append(str(text_info[0]))
-            
-            # 格式1: 标准时间格式 HH:MM:SS.mmm
-            time_pattern = re.compile(r"\d{2}:\d{2}:\d{2}[.:]\d{1,3}")
-            for txt in texts:
-                filtered = "".join(ch for ch in txt if ch in "0123456789:.")
-                m = time_pattern.search(filtered)
-                if m:
-                    return m.group(0)
-            
-            # 格式2: 纯数字格式（如图片所示: 161213185）
-            # 只在用户选择了纯数字格式时才尝试
-            if self.treal_format == "digits":
-                all_text = "".join(texts)
-                digits = "".join(ch for ch in all_text if ch.isdigit())
-                
-                # 至少6位数字（HHMMSS）
-                if len(digits) >= 6:
-                    self.logger.debug(f"检测到纯数字: {digits}, 原始文本: {texts}")
-                    return digits
-            
-        except Exception as e:
-            self.logger.debug(f"OCR异常: {e}")
-            pass
+        # 🚀 使用自适应OCR引擎（自动尝试多种策略）
+        if self.adaptive_ocr:
+            time_str = self.adaptive_ocr.extract_time_adaptive(roi_img, roi_type=roi_type)
+            return time_str
         
+        # 降级方案：使用原有的基础OCR（不应该执行到这里）
         return None
     
     def parse_time_to_ms(self, time_str):
@@ -274,7 +240,7 @@ class AnalysisWorker(QThread):
                 "video_name", "frame_idx", "video_time_s",
                 "app_time_str", "app_time_ms",
                 "real_time_str", "real_time_ms",
-                "delay_ms", "status"
+                "delay_ms", "status", "error_reason"
             ])
             
             frame_idx = 0
@@ -356,6 +322,20 @@ class AnalysisWorker(QThread):
                     debug_path = report_dir / f"debug_frame_{frame_idx}.png"
                     cv2.imwrite(str(debug_path), debug_frame)
                     
+                    # 保存 T_app ROI 裁剪图（重要！）
+                    if self.app_roi:
+                        ax1, ay1, ax2, ay2 = self.app_roi
+                        app_roi_img = frame[ay1:ay2, ax1:ax2].copy()
+                        if app_roi_img.size > 0:
+                            cv2.imwrite(str(report_dir / f"debug_T_app_roi_frame_{frame_idx}.png"), app_roi_img)
+                    
+                    # 保存 T_real ROI 裁剪图
+                    if real_roi:
+                        rx1, ry1, rx2, ry2 = real_roi
+                        real_roi_img = frame[ry1:ry2, rx1:rx2].copy()
+                        if real_roi_img.size > 0:
+                            cv2.imwrite(str(report_dir / f"debug_T_real_roi_frame_{frame_idx}.png"), real_roi_img)
+                    
                     # 只在第一帧保存阈值图
                     if frame_idx == 0:
                         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -365,14 +345,50 @@ class AnalysisWorker(QThread):
                             _, th = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY_INV)
                             cv2.imwrite(str(report_dir / f"debug_threshold_{thresh}.png"), th)
                         
-                        self.log_message.emit(f"调试图已保存到报告文件夹")
+                        self.log_message.emit(f"调试图已保存到报告文件夹（包括ROI裁剪图）")
                 
                 app_time_str = self.extract_time_from_roi(frame, self.app_roi)
                 # real_time_str 已在上面获取
                 
+                # 📊 记录识别成功率统计
+                if self.calibrator:
+                    self.calibrator.record_frame_result(
+                        app_success=(app_time_str is not None),
+                        real_success=(real_time_str is not None)
+                    )
+                
+                # 记录 T_app 识别状态
+                if self.app_roi:
+                    if app_time_str:
+                        self.logger.debug(f"帧 {frame_idx}: T_app 识别成功='{app_time_str}'")
+                    else:
+                        self.logger.warning(f"帧 {frame_idx}: T_app 识别失败！")
+                
+                # ✅ 验证时间合法性
+                app_error_reason = None
+                real_error_reason = None
+                
+                if app_time_str and self.adaptive_ocr:
+                    is_valid, error = self.adaptive_ocr.validate_time(app_time_str)
+                    if not is_valid:
+                        app_error_reason = "T_app无效"
+                        self.logger.warning(f"帧 {frame_idx}: T_app无效时间 ('{app_time_str}')")
+                
+                if real_time_str and self.adaptive_ocr:
+                    is_valid, error = self.adaptive_ocr.validate_time(real_time_str)
+                    if not is_valid:
+                        real_error_reason = "T_real无效"
+                        self.logger.warning(f"帧 {frame_idx}: T_real无效时间 ('{real_time_str}')")
+                
                 # 格式化显示（纯数字转为标准格式）
                 app_time_str_display = self.format_time_display(app_time_str) if app_time_str else None
                 real_time_str_display = self.format_time_display(real_time_str) if real_time_str else None
+                
+                # 如果时间异常，标记为wrong
+                if app_error_reason:
+                    app_time_str_display = f"{app_time_str} (wrong)"
+                if real_error_reason:
+                    real_time_str_display = f"{real_time_str} (wrong)"
                 
                 # 计算延时
                 video_time_s = frame_idx / fps if fps > 0 else None
@@ -391,21 +407,25 @@ class AnalysisWorker(QThread):
                 
                 if app_time_ms is not None and last_app_time_ms is not None:
                     if app_time_ms < last_app_time_ms:
+                        app_error_reason = (app_error_reason + "; " if app_error_reason else "") + "时间倒退"
                         self.log_message.emit(
-                            f"⚠️ 帧 {frame_idx}: T_app时间倒退 ({app_time_str} < 上一帧)，标记为(wrong)"
+                            f"⚠️ 帧 {frame_idx}: T_app时间倒退，标记为(wrong)"
                         )
                         app_time_wrong = True
-                        app_time_str_display = f"{app_time_str} (wrong)"
+                        if "(wrong)" not in app_time_str_display:
+                            app_time_str_display = f"{app_time_str} (wrong)"
                         # 不用于延时计算，但保留显示
                         app_time_ms = None
                 
                 if real_time_ms is not None and last_real_time_ms is not None:
                     if real_time_ms < last_real_time_ms:
+                        real_error_reason = (real_error_reason + "; " if real_error_reason else "") + "时间倒退"
                         self.log_message.emit(
-                            f"⚠️ 帧 {frame_idx}: T_real时间倒退 ({real_time_str} < 上一帧)，标记为(wrong)"
+                            f"⚠️ 帧 {frame_idx}: T_real时间倒退，标记为(wrong)"
                         )
                         real_time_wrong = True
-                        real_time_str_display = f"{real_time_str} (wrong)"
+                        if "(wrong)" not in real_time_str_display:
+                            real_time_str_display = f"{real_time_str} (wrong)"
                         # 不用于延时计算，但保留显示
                         real_time_ms = None
                 
@@ -424,13 +444,21 @@ class AnalysisWorker(QThread):
                 if app_time_ms is not None and real_time_ms is not None:
                     delay_ms = app_time_ms - real_time_ms
                 
+                # 合并错误原因
+                error_reasons = []
+                if app_error_reason:
+                    error_reasons.append(app_error_reason)
+                if real_error_reason:
+                    error_reasons.append(real_error_reason)
+                combined_error = "; ".join(error_reasons) if error_reasons else ""
+                
                 # 保存到 CSV（使用带标记的显示值）
                 writer.writerow([
                     video_path.name, frame_idx,
                     f"{video_time_s:.6f}" if video_time_s is not None else "",
                     app_time_str_display or "", app_time_ms or "",
                     real_time_str_display or "", real_time_ms or "",
-                    delay_ms if delay_ms is not None else "", status
+                    delay_ms if delay_ms is not None else "", status, combined_error
                 ])
                 
                 # 收集数据（使用带标记的显示值）
@@ -442,7 +470,8 @@ class AnalysisWorker(QThread):
                     'delay_ms': delay_ms,
                     'status': status,
                     'app_time_wrong': app_time_wrong,
-                    'real_time_wrong': real_time_wrong
+                    'real_time_wrong': real_time_wrong,
+                    'error_reason': combined_error
                 })
                 
                 # 绘制标定图
@@ -638,6 +667,29 @@ class AnalysisWorker(QThread):
         )
         self.log_message.emit("HTML报告已保存: " + html_path.name)
         self.logger.info(f"HTML报告已保存: {html_path}")
+        
+        # 📊 输出识别统计
+        if self.calibrator:
+            stats = self.calibrator.get_runtime_stats()
+            self.logger.info("=" * 60)
+            self.logger.info("识别统计报告")
+            self.logger.info("=" * 60)
+            self.logger.info(f"T_app 识别成功率: {stats['app_success_rate']:.1%}")
+            self.logger.info(f"T_real 识别成功率: {stats['real_success_rate']:.1%}")
+            self.logger.info(f"总体识别成功率: {stats['overall_success_rate']:.1%}")
+            self.logger.info("=" * 60)
+            
+            self.log_message.emit(
+                f"✅ 识别统计: T_app={stats['app_success_rate']:.1%}, "
+                f"T_real={stats['real_success_rate']:.1%}, "
+                f"总体={stats['overall_success_rate']:.1%}"
+            )
+        
+        # 输出策略统计
+        if self.adaptive_ocr:
+            strategy_stats = self.adaptive_ocr.get_statistics()
+            self.logger.info(f"最佳策略: {strategy_stats['best_strategy']}")
+            self.logger.info(f"策略使用统计: {strategy_stats['strategy_stats']}")
         
         self.logger.info(f"分析完成！报告文件夹: {report_dir}")
         return True, f"分析完成！\n报告文件夹: {report_dir}", str(report_dir)

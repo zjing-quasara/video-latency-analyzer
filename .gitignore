@@ -29,6 +29,27 @@ logs/
 data/output/
 data/debug/
 test_output/
+test_results/
+
+# 视频文件（太大不上传）
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.wmv
+
+# 网络监控CSV（测试数据）
+network_log_*.csv
+*_with_network.csv
+
+# 分析报告输出（用户数据）
+视频延时分析/
+报告/
+
+# Demo文件
+demo_*.html
+demo_*.py
 
 # 可执行文件
 *.exe
@@ -45,4 +66,18 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.rar
+
+# PyInstaller
+*.manifest
+*.spec
+build_exe.spec
+
+# PaddleOCR模型（太大）
+.paddleocr/
+inference/
+
+# 测试文件
+test_*.py
+quick_test.py
+batch_test*.py
 

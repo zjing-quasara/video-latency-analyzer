@@ -8,6 +8,7 @@ from .smart_calibrator import SmartCalibrator
 from .report_generator import ReportGenerator
 from .network_monitor import NetworkMonitor
 from .network_matcher import NetworkMatcher
+from .outlier_detector import DelayOutlierDetector
 
 __all__ = [
     'AdaptiveOCREngine',
@@ -15,7 +16,8 @@ __all__ = [
     'SmartCalibrator',
     'ReportGenerator',
     'NetworkMonitor',
-    'NetworkMatcher'
+    'NetworkMatcher',
+    'DelayOutlierDetector'
 ]
 
 

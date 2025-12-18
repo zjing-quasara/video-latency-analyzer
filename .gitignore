@@ -52,6 +52,7 @@ network_log_*.csv
 demo_*.html
 demo_*.py
 test_*.py
+temp_*.py
 quick_test.py
 batch_test*.py
 *_backup.py

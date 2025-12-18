@@ -52,14 +52,14 @@ class SmartCalibrator:
             elif level == 'warning':
                 self.logger.warning(msg)
     
-    def calibrate(self, video_path: str, app_roi: Tuple, max_frames: int = 3) -> CalibrationResult:
+    def calibrate(self, video_path: str, app_roi: Tuple, max_frames: int = 2) -> CalibrationResult:
         """
         自动校准 - 使用前N帧找到最佳识别参数
         
         Args:
             video_path: 视频路径
             app_roi: T_app 区域 (x1, y1, x2, y2)
-            max_frames: 最多使用多少帧进行校准（默认3帧，已优化）
+            max_frames: 最多使用多少帧进行校准（默认2帧，极速模式）
             
         Returns:
             校准结果
@@ -98,8 +98,8 @@ class SmartCalibrator:
                 x1, y1, x2, y2 = app_roi
                 app_img = frame[y1:y2, x1:x2].copy()
                 
-                # 尝试关键策略（优化：只测试最有效的4个）
-                for strategy in ['contrast', 'sharpen', 'binary', 'grayscale']:
+                # 极速模式：只测试2个最有效策略
+                for strategy in ['contrast', 'sharpen']:
                     result = self._test_strategy(app_img, strategy, 'T_app')
                     if result:
                         app_results[strategy]['success'] += 1
@@ -113,7 +113,7 @@ class SmartCalibrator:
                 x1, y1, x2, y2 = real_roi
                 real_img = frame[y1:y2, x1:x2].copy()
                 
-                for strategy in ['contrast', 'sharpen', 'binary', 'grayscale']:
+                for strategy in ['contrast', 'sharpen']:
                     result = self._test_strategy(real_img, strategy, 'T_real')
                     if result:
                         real_results[strategy]['success'] += 1
@@ -166,17 +166,20 @@ class SmartCalibrator:
         return self.calibration_result
     
     def _select_calibration_frames(self, total_frames: int, max_frames: int) -> List[int]:
-        """智能选择校准帧（均匀分布）"""
+        """智能选择校准帧（选择视频稳定段，跳过开头）"""
         if total_frames <= max_frames:
             return list(range(min(10, total_frames)))
         
-        # 均匀选择
-        step = total_frames // max_frames
-        frames = [i * step for i in range(max_frames)]
+        # 跳过前10%的帧（可能是空白/加载帧），从稳定段选择
+        start_frame = int(total_frames * 0.1)
+        end_frame = int(total_frames * 0.9)
         
-        # 确保包含第一帧
-        if 0 not in frames:
-            frames[0] = 0
+        if max_frames == 1:
+            return [start_frame]
+        
+        # 在稳定段均匀选择
+        step = (end_frame - start_frame) // max_frames
+        frames = [start_frame + i * step for i in range(max_frames)]
         
         return sorted(frames)
     

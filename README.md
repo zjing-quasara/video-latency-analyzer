@@ -1,25 +1,79 @@
 # 视频延时分析工具
 
-通过 OCR 识别视频时间戳，精确测量系统延迟。
+智能分析录屏视频中的时间戳延迟。
 
-## 快速开始
+## 🚀 快速开始
 
 ```bash
 # 安装依赖
 pip install -r requirements.txt
 
-# 运行程序
+# 启动程序
 python main.py
 ```
 
-## 核心功能
+## 📋 使用流程
 
--  GPU 加速 OCR 识别
--  自动检测 ROI 区域
--  可视化 HTML 报告
--  数据异常检测
+1. **选择视频** → 点击"选择视频"
+2. **标定T_app** → 用滑块调整到应用内时间戳位置
+3. **开始分析** → 自动生成报告
 
-## 技术栈
+## 📊 输出结果
 
-Python | PyQt5 | PaddleOCR | OpenCV | Chart.js
+报告文件夹包含：
+- `xxx.csv` - 原始数据
+- `xxx.html` - 可视化报告
+- `xxx.mp4` - 标注视频
+- `analysis.log` - 分析日志
 
+## 🔧 核心功能
+
+- **时间识别**：OCR识别T_app和T_real
+- **延时计算**：自动计算时间差
+- **网络日志匹配**：支持手机/电脑网络数据对齐
+- **异常值检测**：自动识别数据异常
+- **可视化报告**：HTML图表展示
+
+## 📦 项目结构
+
+```
+src/
+├── core/              # 核心模块
+│   ├── time_detector.py      # 时间识别
+│   ├── report_generator.py   # 报告生成
+│   ├── network_matcher.py    # 网络匹配
+│   └── outlier_detector.py   # 异常检测
+├── gui/               # GUI界面
+│   ├── main_window.py
+│   └── worker.py
+└── utils/             # 工具
+    └── logger.py
+```
+
+## 🧪 测试
+
+```bash
+# 测试主程序流程
+python test_main_flow.py
+```
+
+## 🔄 后端迁移
+
+核心模块可独立运行，迁移到FastAPI：
+
+```python
+from src.core.time_detector import detect_time_app, detect_time_real
+from src.core.report_generator import ReportGenerator
+
+@app.post("/analyze")
+async def analyze_video(video: UploadFile):
+    # 调用核心模块处理
+    ...
+```
+
+## 📝 依赖
+
+- opencv-python - 视频处理
+- paddleocr - OCR识别
+- PyQt5 - GUI界面
+- pandas - 数据处理

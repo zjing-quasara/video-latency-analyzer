@@ -58,10 +58,11 @@ class LogManager:
         """记录系统信息"""
         import platform
         import cv2
-        try:
-            from paddleocr import __version__ as paddleocr_version
-        except:
-            paddleocr_version = "unknown"
+        # TODO: 时间识别引擎版本检查
+        # try:
+        #     from paddleocr import __version__ as paddleocr_version
+        # except:
+        #     paddleocr_version = "unknown"
         
         self.logger.info("=" * 60)
         self.logger.info("视频延时分析工具启动")
@@ -69,7 +70,7 @@ class LogManager:
         self.logger.info(f"系统: {platform.system()} {platform.release()}")
         self.logger.info(f"Python: {platform.python_version()}")
         self.logger.info(f"OpenCV: {cv2.__version__}")
-        self.logger.info(f"PaddleOCR: {paddleocr_version}")
+        # self.logger.info(f"PaddleOCR: {paddleocr_version}")
         self.logger.info(f"日志文件: {self.log_file.absolute()}")
         self.logger.info("=" * 60)
     

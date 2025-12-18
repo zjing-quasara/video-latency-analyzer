@@ -1,12 +1,15 @@
 """
 视频延时分析工具 - 启动入口
 """
-import sys
+# 必须在最开始设置，禁用PaddleX的模型检查（避免卡顿）
 import os
+os.environ['DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+
+import sys
 import traceback
 from PyQt5.QtWidgets import QApplication, QMessageBox
-from gui import MainWindow
-from utils.logger import init_logger, get_logger, get_log_file, log_exception
+from src.gui import MainWindow
+from src.utils.logger import init_logger, get_logger, get_log_file, log_exception
 
 
 def main():
@@ -22,23 +25,24 @@ def main():
         logger.info("检查依赖...")
         try:
             import cv2
-            logger.info(f"✓ OpenCV {cv2.__version__}")
+            logger.info(f"[OK] OpenCV {cv2.__version__}")
         except ImportError as e:
-            logger.error(f"✗ OpenCV 未安装: {e}")
+            logger.error(f"[ERROR] OpenCV 未安装: {e}")
             raise
         
-        try:
-            from paddleocr import PaddleOCR
-            logger.info(f"✓ PaddleOCR 已安装")
-        except ImportError as e:
-            logger.error(f"✗ PaddleOCR 未安装: {e}")
-            raise
+        # TODO: 时间识别引擎依赖检查
+        # try:
+        #     from paddleocr import PaddleOCR
+        #     logger.info(f"[OK] PaddleOCR 已安装")
+        # except ImportError as e:
+        #     logger.error(f"[ERROR] PaddleOCR 未安装: {e}")
+        #     raise
         
         try:
             from PyQt5 import QtCore
-            logger.info(f"✓ PyQt5 {QtCore.QT_VERSION_STR}")
+            logger.info(f"[OK] PyQt5 {QtCore.QT_VERSION_STR}")
         except ImportError as e:
-            logger.error(f"✗ PyQt5 未安装: {e}")
+            logger.error(f"[ERROR] PyQt5 未安装: {e}")
             raise
         
         logger.info("所有依赖检查通过")
@@ -54,13 +58,13 @@ def main():
             # 设置Qt插件路径
             if os.path.exists(qt_plugin_path):
                 os.environ['QT_PLUGIN_PATH'] = qt_plugin_path
-                logger.info(f"✓ Qt插件路径已设置: {qt_plugin_path}")
+                logger.info(f"[OK] Qt插件路径已设置: {qt_plugin_path}")
             else:
                 # 尝试备用路径
                 qt_plugin_path = os.path.join(pyqt5_path, 'Qt', 'plugins')
                 if os.path.exists(qt_plugin_path):
                     os.environ['QT_PLUGIN_PATH'] = qt_plugin_path
-                    logger.info(f"✓ Qt插件路径已设置: {qt_plugin_path}")
+                    logger.info(f"[OK] Qt插件路径已设置: {qt_plugin_path}")
                 else:
                     logger.warning(f"⚠ 未找到Qt插件路径，将使用系统默认路径")
             

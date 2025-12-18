@@ -8,15 +8,89 @@ import numpy as np
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QTextEdit, QFileDialog, QMessageBox, QDialog, QSlider,
+    QProgressBar, QTextEdit, QFileDialog, QMessageBox, QDialog,
     QGroupBox, QCheckBox, QComboBox, QSpinBox, QRadioButton, QLineEdit
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer, QPoint, QRect
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from .worker import AnalysisWorker
-from config import REPORT_CONFIG
-from utils.logger import get_logger, get_log_file
+from src.config import REPORT_CONFIG, ROI_CONFIG_PATH
+from src.utils.logger import get_logger, get_log_file
 import json
+
+
+class InteractiveImageLabel(QLabel):
+    """支持鼠标拖拽选择ROI的图像标签"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_dialog = parent
+        self.drawing = False
+        self.start_point = QPoint()
+        self.current_point = QPoint()
+        self.setMouseTracking(True)
+        
+    def mousePressEvent(self, event):
+        """鼠标按下"""
+        if event.button() == Qt.LeftButton:
+            self.drawing = True
+            # 转换为原图坐标
+            pos = self.map_to_original(event.pos())
+            if pos:
+                self.start_point = pos
+                self.current_point = pos
+                self.parent_dialog.start_drawing(pos)
+    
+    def mouseMoveEvent(self, event):
+        """鼠标移动"""
+        if self.drawing:
+            pos = self.map_to_original(event.pos())
+            if pos:
+                self.current_point = pos
+                self.parent_dialog.update_drawing(self.start_point, pos)
+    
+    def mouseReleaseEvent(self, event):
+        """鼠标释放"""
+        if event.button() == Qt.LeftButton and self.drawing:
+            self.drawing = False
+            pos = self.map_to_original(event.pos())
+            if pos:
+                self.parent_dialog.finish_drawing(self.start_point, pos)
+    
+    def map_to_original(self, pos):
+        """将显示坐标映射到原图坐标"""
+        if not self.pixmap():
+            return None
+        
+        # 获取显示的pixmap大小
+        pixmap = self.pixmap()
+        label_w = self.width()
+        label_h = self.height()
+        pixmap_w = pixmap.width()
+        pixmap_h = pixmap.height()
+        
+        # 计算pixmap在label中的位置（居中显示）
+        x_offset = (label_w - pixmap_w) / 2
+        y_offset = (label_h - pixmap_h) / 2
+        
+        # 鼠标相对于pixmap的位置
+        rel_x = pos.x() - x_offset
+        rel_y = pos.y() - y_offset
+        
+        # 检查是否在pixmap范围内
+        if rel_x < 0 or rel_x >= pixmap_w or rel_y < 0 or rel_y >= pixmap_h:
+            return None
+        
+        # 转换到原图坐标
+        dialog = self.parent_dialog
+        orig_x = int(rel_x * dialog.w / pixmap_w)
+        orig_y = int(rel_y * dialog.h / pixmap_h)
+        
+        # 限制在原图范围内
+        orig_x = max(0, min(orig_x, dialog.w - 1))
+        orig_y = max(0, min(orig_y, dialog.h - 1))
+        
+        return QPoint(orig_x, orig_y)
 
 
 class ROIAdjustDialog(QDialog):
@@ -24,9 +98,9 @@ class ROIAdjustDialog(QDialog):
     
     def __init__(self, frame, initial_roi, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("标定 T_app 区域")
+        self.setWindowTitle("标定 T_app 区域 - 用鼠标拖拽框选")
         self.setModal(True)
-        self.resize(1000, 700)
+        self.resize(1200, 800)
         
         self.frame = frame
         self.h, self.w = frame.shape[:2]
@@ -41,71 +115,105 @@ class ROIAdjustDialog(QDialog):
     def init_ui(self):
         layout = QVBoxLayout(self)
         
-        # 图像预览
-        self.image_label = QLabel()
+        # 提示信息
+        hint_label = QLabel("操作说明：用鼠标在图像上拖拽框选 T_app 区域")
+        hint_label.setStyleSheet("color: #2c3e50; font-size: 12pt; font-weight: bold; padding: 8px;")
+        hint_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint_label)
+        
+        # 图像预览（支持鼠标交互）
+        self.image_label = InteractiveImageLabel(self)
         self.image_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.image_label)
+        self.image_label.setMinimumSize(800, 450)
+        layout.addWidget(self.image_label, 1)  # 占据主要空间
         
-        # 滑块控制
-        sliders_layout = QVBoxLayout()
-        
-        self.x1_slider = self._create_slider("X1 (左)", 0, self.w, self.x1, sliders_layout)
-        self.y1_slider = self._create_slider("Y1 (上)", 0, self.h, self.y1, sliders_layout)
-        self.x2_slider = self._create_slider("X2 (右)", 0, self.w, self.x2, sliders_layout)
-        self.y2_slider = self._create_slider("Y2 (下)", 0, self.h, self.y2, sliders_layout)
-        
-        layout.addLayout(sliders_layout)
+        # ROI信息显示
+        self.roi_info_label = QLabel()
+        self.roi_info_label.setStyleSheet("color: #27ae60; font-size: 11pt; padding: 8px;")
+        self.roi_info_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.roi_info_label)
+        self.update_roi_info()
         
         # 按钮
         btn_layout = QHBoxLayout()
         btn_confirm = QPushButton("确认")
+        btn_confirm.setStyleSheet("font-size: 12pt; padding: 10px 30px; font-weight: bold;")
         btn_cancel = QPushButton("取消")
+        btn_cancel.setStyleSheet("font-size: 12pt; padding: 10px 30px;")
         btn_confirm.clicked.connect(self.on_confirm)
         btn_cancel.clicked.connect(self.reject)
+        btn_layout.addStretch()
         btn_layout.addWidget(btn_confirm)
         btn_layout.addWidget(btn_cancel)
+        btn_layout.addStretch()
         layout.addLayout(btn_layout)
     
-    def _create_slider(self, label, min_val, max_val, init_val, parent_layout):
-        """创建滑块"""
-        h_layout = QHBoxLayout()
-        lbl = QLabel(f"{label}:")
-        lbl.setFixedWidth(80)
-        slider = QSlider(Qt.Horizontal)
-        slider.setMinimum(min_val)
-        slider.setMaximum(max_val)
-        slider.setValue(init_val)
-        slider.valueChanged.connect(self.on_slider_changed)
-        value_label = QLabel(str(init_val))
-        value_label.setFixedWidth(50)
-        slider.value_label = value_label
-        h_layout.addWidget(lbl)
-        h_layout.addWidget(slider)
-        h_layout.addWidget(value_label)
-        parent_layout.addLayout(h_layout)
-        return slider
+    def start_drawing(self, pos):
+        """开始绘制ROI"""
+        self.x1 = pos.x()
+        self.y1 = pos.y()
+        self.x2 = pos.x()
+        self.y2 = pos.y()
+        self.update_preview()
     
-    def on_slider_changed(self):
-        """滑块变化"""
-        self.x1 = self.x1_slider.value()
-        self.y1 = self.y1_slider.value()
-        self.x2 = self.x2_slider.value()
-        self.y2 = self.y2_slider.value()
+    def update_drawing(self, start_pos, current_pos):
+        """更新绘制中的ROI"""
+        self.x1 = start_pos.x()
+        self.y1 = start_pos.y()
+        self.x2 = current_pos.x()
+        self.y2 = current_pos.y()
+        self.update_preview()
+        self.update_roi_info()
+    
+    def finish_drawing(self, start_pos, end_pos):
+        """完成ROI绘制"""
+        x1, x2 = min(start_pos.x(), end_pos.x()), max(start_pos.x(), end_pos.x())
+        y1, y2 = min(start_pos.y(), end_pos.y()), max(start_pos.y(), end_pos.y())
         
-        # 更新标签
-        self.x1_slider.value_label.setText(str(self.x1))
-        self.y1_slider.value_label.setText(str(self.y1))
-        self.x2_slider.value_label.setText(str(self.x2))
-        self.y2_slider.value_label.setText(str(self.y2))
+        self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
         
         self.update_preview()
+        self.update_roi_info()
+    
+    def update_roi_info(self):
+        """更新ROI信息显示"""
+        x1, x2 = min(self.x1, self.x2), max(self.x1, self.x2)
+        y1, y2 = min(self.y1, self.y2), max(self.y1, self.y2)
+        width = x2 - x1
+        height = y2 - y1
+        self.roi_info_label.setText(
+            f"ROI: ({x1}, {y1}) -> ({x2}, {y2})  |  宽度: {width}px  |  高度: {height}px"
+        )
     
     def update_preview(self):
         """更新预览"""
         preview = self.frame.copy()
         
-        # 画蓝色ROI框
-        cv2.rectangle(preview, (self.x1, self.y1), (self.x2, self.y2), (255, 0, 0), 2)
+        # 确保坐标顺序正确
+        x1, x2 = min(self.x1, self.x2), max(self.x1, self.x2)
+        y1, y2 = min(self.y1, self.y2), max(self.y1, self.y2)
+        
+        # 画蓝色ROI框（加粗）
+        cv2.rectangle(preview, (x1, y1), (x2, y2), (255, 0, 0), 3)
+        
+        # 添加半透明遮罩（ROI外部变暗）
+        mask = np.zeros_like(preview)
+        mask[y1:y2, x1:x2] = preview[y1:y2, x1:x2]
+        preview = cv2.addWeighted(preview, 0.4, mask, 0.6, 0)
+        
+        # 重新画ROI框（确保可见）
+        cv2.rectangle(preview, (x1, y1), (x2, y2), (255, 0, 0), 3)
+        
+        # 画角点标记
+        corner_size = 20
+        cv2.line(preview, (x1, y1), (x1 + corner_size, y1), (0, 255, 0), 3)
+        cv2.line(preview, (x1, y1), (x1, y1 + corner_size), (0, 255, 0), 3)
+        cv2.line(preview, (x2, y1), (x2 - corner_size, y1), (0, 255, 0), 3)
+        cv2.line(preview, (x2, y1), (x2, y1 + corner_size), (0, 255, 0), 3)
+        cv2.line(preview, (x1, y2), (x1 + corner_size, y2), (0, 255, 0), 3)
+        cv2.line(preview, (x1, y2), (x1, y2 - corner_size), (0, 255, 0), 3)
+        cv2.line(preview, (x2, y2), (x2 - corner_size, y2), (0, 255, 0), 3)
+        cv2.line(preview, (x2, y2), (x2, y2 - corner_size), (0, 255, 0), 3)
         
         # 转换为QPixmap显示
         h, w, ch = preview.shape
@@ -114,20 +222,29 @@ class ROIAdjustDialog(QDialog):
         pixmap = QPixmap.fromImage(q_img)
         
         # 缩放以适应窗口
-        scaled_pixmap = pixmap.scaled(900, 600, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled_pixmap = pixmap.scaled(1100, 650, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.image_label.setPixmap(scaled_pixmap)
     
     def on_confirm(self):
         """确认"""
-        if self.x2 <= self.x1 or self.y2 <= self.y1:
-            QMessageBox.warning(self, "警告", "ROI区域无效")
+        x1, x2 = min(self.x1, self.x2), max(self.x1, self.x2)
+        y1, y2 = min(self.y1, self.y2), max(self.y1, self.y2)
+        
+        if x2 <= x1 or y2 <= y1:
+            QMessageBox.warning(self, "警告", "ROI区域无效，请重新框选")
             return
+        
+        # 更新为正确的坐标
+        self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
         self.confirmed = True
         self.accept()
     
     def get_roi(self):
         """获取ROI"""
-        return (self.x1, self.y1, self.x2, self.y2)
+        # 确保返回正确的坐标顺序
+        x1, x2 = min(self.x1, self.x2), max(self.x1, self.x2)
+        y1, y2 = min(self.y1, self.y2), max(self.y1, self.y2)
+        return (x1, y1, x2, y2)
 
 
 class MainWindow(QMainWindow):
@@ -139,7 +256,7 @@ class MainWindow(QMainWindow):
         self.video_path = None
         self.video_total_frames = 0  # 视频总帧数
         self.video_fps = 0  # 视频FPS
-        self.roi_config_path = Path("data/config/roi_config.json")
+        self.roi_config_path = ROI_CONFIG_PATH  # 使用统一配置
         self.worker = None
         self.use_gpu = True  # 默认使用GPU
         self.resize_ratio = 0.5
@@ -148,7 +265,7 @@ class MainWindow(QMainWindow):
         self.pc_log_path = None  # 电脑网络日志路径
         
         # 默认输出路径（桌面）
-        from config import DEFAULT_OUTPUT_DIR
+        from src.config import DEFAULT_OUTPUT_DIR
         self.output_dir = DEFAULT_OUTPUT_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
         

@@ -22,12 +22,32 @@ ENV/
 *~
 
 # ===== 日志文件 =====
+# 项目日志（开发用）
 logs/*.log
-*.log
 
-# ===== 输出和调试数据 =====
-data/output/*
+# 报告中的日志不忽略（用户需要）
+!**/analysis.log
+
+# ===== 应用数据目录 =====
+# 用户配置（ROI标定等私人数据）
+data/config/*.json
+src/data/config/*.json
+!data/config/.gitkeep
+!src/data/config/.gitkeep
+
+# 调试输出
 data/debug/*
+src/data/debug/*
+!data/debug/.gitkeep
+!src/data/debug/.gitkeep
+
+# 输出结果
+data/output/*
+src/data/output/*
+!data/output/.gitkeep
+!src/data/output/.gitkeep
+
+# 测试输出
 test_output/
 test_results/
 
@@ -48,7 +68,11 @@ network_log_*.csv
 视频延时分析/
 报告/
 
-# ===== Demo和测试文件 =====
+# ===== 测试文件夹（整个文件夹不上传）=====
+tests/*
+!tests/README.md
+
+# ===== Demo和测试文件（根目录的，防止误放）=====
 demo_*.html
 demo_*.py
 test_*.py
@@ -58,6 +82,7 @@ batch_test*.py
 *_backup.py
 *_old.py
 *_temp.py
+calibrate_*.py
 
 # ===== 可执行文件 =====
 *.exe

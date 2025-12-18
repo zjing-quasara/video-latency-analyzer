@@ -9,13 +9,19 @@ import statistics
 class AnomalyDetector:
     """延迟异常检测器"""
     
-    def __init__(self):
-        """初始化检测器"""
+    def __init__(self, hard_delay_max_ms: float = 3000):
+        """
+        初始化检测器
+        
+        Args:
+            hard_delay_max_ms: 硬性延时上限（毫秒），超过此值标记为wrong
+        """
         self.normal_delays: List[float] = []  # 正常延迟值历史
         self.last_app_time_ms: Optional[float] = None  # 上一帧T_app(ms)
         self.last_real_time_ms: Optional[float] = None  # 上一帧T_real(ms)
         self.median: Optional[float] = None  # 中位数
         self.mad: Optional[float] = None  # MAD值
+        self.hard_delay_max_ms = hard_delay_max_ms  # 硬性延时上限
     
     def check_immediate(
         self,
@@ -27,9 +33,10 @@ class AnomalyDetector:
         立即检测（硬阈值）- 在计算延迟时立即调用
         
         检测内容：
-        1. 时间倒退
-        2. 物理极限（>10秒）
-        3. 负延迟太大（<-5秒）
+        1. 硬性延时上限（用户可配置）
+        2. 时间倒退
+        3. 物理极限（>10秒）
+        4. 负延迟太大（<-5秒）
         
         Args:
             app_time_ms: T_app时间（毫秒）
@@ -41,6 +48,10 @@ class AnomalyDetector:
             - True: 正常，可以加入历史
             - False: 异常，不加入历史
         """
+        # 检查0: 硬性延时上限（最高优先级）
+        if delay_ms > self.hard_delay_max_ms:
+            return False, f"延迟超过硬性上限{self.hard_delay_max_ms}ms: 实际{delay_ms:.0f}ms"
+        
         # 检查1: 时间倒退
         if self.last_app_time_ms is not None:
             if app_time_ms < self.last_app_time_ms:

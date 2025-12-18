@@ -70,8 +70,13 @@ class AnalysisWorker(QThread):
             
             # 初始化ROI跟踪器和异常检测器
             self.roi_tracker = ROITracker()
-            self.anomaly_detector = AnomalyDetector()
-            self.log_message.emit("[OK] ROI跟踪器和异常检测器已初始化")
+            
+            # 从配置加载硬性延时阈值
+            from src.config import ANOMALY_DETECTION
+            hard_delay_max = ANOMALY_DETECTION.get('hard_delay_max_ms', 3000)
+            self.anomaly_detector = AnomalyDetector(hard_delay_max_ms=hard_delay_max)
+            
+            self.log_message.emit(f"[OK] ROI跟踪器和异常检测器已初始化（硬性延时上限: {hard_delay_max}ms）")
             
             success, message, report_folder = self.analyze_video()
             self.logger.info(f"分析完成: success={success}, folder={report_folder}")

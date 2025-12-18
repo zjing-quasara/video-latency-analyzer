@@ -5,6 +5,7 @@
 import csv
 from typing import List, Dict, Optional
 from pathlib import Path
+from datetime import datetime, timedelta
 import bisect
 
 
@@ -19,6 +20,115 @@ class NetworkMatcher:
             tolerance: 时间戳匹配容差（秒），默认1秒
         """
         self.tolerance = tolerance
+    
+    @staticmethod
+    def parse_time_to_timestamp(time_str: str, base_date: Optional[datetime] = None) -> Optional[float]:
+        """
+        将时间字符串（HH:MM:SS.mmm）转换为Unix时间戳
+        
+        Args:
+            time_str: 时间字符串，格式如 "19:29:30.246"
+            base_date: 基准日期（可选，默认今天）
+            
+        Returns:
+            Unix时间戳（秒），如果解析失败返回None
+        """
+        if not time_str:
+            return None
+        
+        try:
+            # 解析时间部分
+            time_parts = time_str.split(':')
+            if len(time_parts) != 3:
+                return None
+            
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            
+            # 解析秒和毫秒
+            sec_parts = time_parts[2].split('.')
+            second = int(sec_parts[0])
+            microsecond = 0
+            if len(sec_parts) > 1:
+                # 毫秒转微秒
+                ms_str = sec_parts[1].ljust(6, '0')[:6]  # 补齐到6位
+                microsecond = int(ms_str)
+            
+            # 使用基准日期或今天
+            if base_date is None:
+                base_date = datetime.now()
+            
+            # 构造完整的datetime
+            dt = datetime(
+                year=base_date.year,
+                month=base_date.month,
+                day=base_date.day,
+                hour=hour,
+                minute=minute,
+                second=second,
+                microsecond=microsecond
+            )
+            
+            # 转换为Unix时间戳
+            return dt.timestamp()
+            
+        except (ValueError, IndexError):
+            return None
+    
+    @staticmethod
+    def calculate_time_offset(video_data: List[Dict], network_data: List[Dict], time_field: str = 'T_real') -> Optional[float]:
+        """
+        计算视频相对时间和网络绝对时间之间的偏移量
+        
+        通过匹配视频中的时间字段（T_real或T_app）和网络日志的时间戳来计算偏移量
+        
+        Args:
+            video_data: 视频分析数据（包含timestamp和T_real/T_app）
+            network_data: 网络日志数据（包含timestamp）
+            time_field: 使用哪个时间字段进行匹配（'T_real' 或 'T_app'）
+            
+        Returns:
+            时间偏移量（秒），video_timestamp + offset = network_timestamp
+            如果无法计算返回None
+        """
+        if not video_data or not network_data:
+            return None
+        
+        # 找到第一个有有效时间字段的视频帧
+        first_valid_frame = None
+        for frame in video_data:
+            if frame.get(time_field):
+                first_valid_frame = frame
+                break
+        
+        if not first_valid_frame:
+            print(f"[WARNING] 视频数据中没有找到{time_field}，无法计算时间偏移量")
+            return None
+        
+        # 获取网络日志的第一个时间戳，用它的日期作为基准
+        network_first_ts = network_data[0]['timestamp']
+        base_date = datetime.fromtimestamp(network_first_ts)
+        
+        # 将时间字段转换为绝对时间戳
+        time_str = first_valid_frame[time_field]
+        time_timestamp = NetworkMatcher.parse_time_to_timestamp(time_str, base_date)
+        
+        if time_timestamp is None:
+            print(f"[WARNING] 无法解析{time_field}时间: {time_str}")
+            return None
+        
+        # 计算偏移量
+        video_relative_time = first_valid_frame['timestamp']
+        offset = time_timestamp - video_relative_time
+        
+        print(f"[INFO] 时间偏移量计算 ({time_field}):")
+        print(f"  - 视频相对时间: {video_relative_time:.3f}s")
+        print(f"  - {time_field}: {time_str}")
+        print(f"  - {time_field}绝对时间戳: {time_timestamp:.3f}")
+        print(f"  - 计算出的偏移量: {offset:.3f}s")
+        print(f"  - 基准日期: {base_date.strftime('%Y-%m-%d')}")
+        
+        return offset
     
     @staticmethod
     def load_network_log(filepath: str) -> List[Dict]:
@@ -130,28 +240,53 @@ class NetworkMatcher:
         self,
         video_data: List[Dict],
         phone_log: Optional[List[Dict]] = None,
-        pc_log: Optional[List[Dict]] = None
+        pc_log: Optional[List[Dict]] = None,
+        auto_offset: bool = True
     ) -> List[Dict]:
         """
         匹配视频数据和网络日志
+        
+        重要：
+        - T_app（手机应用时间）对应手机端网络日志
+        - T_real（真实世界时间）对应电脑端网络日志
         
         Args:
             video_data: 视频分析数据
             phone_log: 手机网络日志（可选）
             pc_log: 电脑网络日志（可选）
+            auto_offset: 是否自动计算时间偏移量（默认True）
             
         Returns:
             合并后的数据
         """
         result = []
+        phone_offset = None
+        pc_offset = None
+        
+        # 自动计算时间偏移量
+        if auto_offset:
+            # T_app 对应手机端日志
+            if phone_log:
+                phone_offset = self.calculate_time_offset(video_data, phone_log, time_field='T_app')
+                if phone_offset is None:
+                    print("[WARNING] 无法根据T_app计算手机端时间偏移量")
+                    print("[WARNING] 这可能导致无法匹配手机网络数据")
+            
+            # T_real 对应电脑端日志
+            if pc_log:
+                pc_offset = self.calculate_time_offset(video_data, pc_log, time_field='T_real')
+                if pc_offset is None:
+                    print("[WARNING] 无法根据T_real计算电脑端时间偏移量")
+                    print("[WARNING] 这可能导致无法匹配电脑网络数据")
         
         for frame in video_data:
             timestamp = frame['timestamp']
             merged = frame.copy()
             
-            # 匹配手机ping
+            # 匹配手机ping（使用T_app对应的偏移量）
             if phone_log:
-                phone_ping = self.find_nearest_ping(phone_log, timestamp)
+                phone_absolute_ts = timestamp + phone_offset if phone_offset is not None else timestamp
+                phone_ping = self.find_nearest_ping(phone_log, phone_absolute_ts)
                 if phone_ping:
                     merged['phone_ping_ms'] = phone_ping['ping_ms']
                     merged['phone_status'] = phone_ping['status']
@@ -159,9 +294,10 @@ class NetworkMatcher:
                     merged['phone_ping_ms'] = None
                     merged['phone_status'] = 'no_data'
             
-            # 匹配电脑ping
+            # 匹配电脑ping（使用T_real对应的偏移量）
             if pc_log:
-                pc_ping = self.find_nearest_ping(pc_log, timestamp)
+                pc_absolute_ts = timestamp + pc_offset if pc_offset is not None else timestamp
+                pc_ping = self.find_nearest_ping(pc_log, pc_absolute_ts)
                 if pc_ping:
                     merged['pc_ping_ms'] = pc_ping['ping_ms']
                     merged['pc_status'] = pc_ping['status']
@@ -199,7 +335,8 @@ def match_network_logs(
     phone_csv: Optional[str] = None,
     pc_csv: Optional[str] = None,
     output_csv: Optional[str] = None,
-    tolerance: float = 1.0
+    tolerance: float = 1.0,
+    auto_offset: bool = True
 ) -> List[Dict]:
     """
     便捷函数：匹配网络日志
@@ -210,6 +347,7 @@ def match_network_logs(
         pc_csv: 电脑网络日志CSV文件路径（可选）
         output_csv: 输出CSV文件路径（可选）
         tolerance: 时间戳匹配容差（秒）
+        auto_offset: 是否自动计算时间偏移量（默认True）
         
     Returns:
         合并后的数据
@@ -222,7 +360,7 @@ def match_network_logs(
     pc_log = matcher.load_network_log(pc_csv) if pc_csv else None
     
     # 匹配
-    merged_data = matcher.match(video_data, phone_log, pc_log)
+    merged_data = matcher.match(video_data, phone_log, pc_log, auto_offset=auto_offset)
     
     # 保存
     if output_csv:

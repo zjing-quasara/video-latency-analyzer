@@ -54,6 +54,14 @@ ANALYSIS_MODES = {
 # OCR配置
 DEFAULT_USE_GPU = False    # 默认不使用GPU
 
+# 异常检测配置
+ANOMALY_DETECTION = {
+    'hard_delay_max_ms': 3000,      # 硬性延时上限（毫秒），超过标记为wrong
+    'physical_limit_ms': 10000,     # 物理极限（毫秒），绝对异常
+    'negative_limit_ms': -5000,     # 负延迟下限（毫秒）
+    'statistical_z_threshold': 5.0,  # 统计异常z-score阈值
+}
+
 # 报告配置
 REPORT_CONFIG = {
     'csv_name': 'analysis_report.csv',

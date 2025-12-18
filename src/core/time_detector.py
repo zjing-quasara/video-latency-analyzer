@@ -9,7 +9,7 @@ from src.core.roi_tracker import ROITracker
 
 def parse_time_format_colon(text: str) -> Optional[str]:
     """
-    解析冒号格式时间: HH:MM:SS.mmm 或 H:MM:SS.mmm
+    解析冒号格式时间: HH:MM:SS.mmm (严格格式，不自动补0)
     
     Args:
         text: OCR识别的文本
@@ -19,11 +19,14 @@ def parse_time_format_colon(text: str) -> Optional[str]:
         
     Examples:
         "12:34:56.789" -> "12:34:56.789"
-        "1:23:45.678"  -> "01:23:45.678"
-        "12:34:56"     -> "12:34:56.000"
+        "12:34:56"     -> "12:34:56.000" (无毫秒)
+        "1:23:45.678"  -> None (小时位不足2位，拒绝识别)
+        "12:34:56.78"  -> None (毫秒位不足3位，拒绝识别)
     """
-    # 匹配 H:MM:SS 或 HH:MM:SS，可选的毫秒部分
-    pattern = r'(\d{1,2}):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?'
+    # 严格匹配 HH:MM:SS 格式（小时、分钟、秒都必须是2位）
+    # 毫秒部分：要么没有，要么必须是完整的3位
+    # 使用负向前瞻确保秒后面如果有点或冒号，后面必须跟3位数字
+    pattern = r'(\d{2}):(\d{2}):(\d{2})(?:[.:](\d{3}))?(?![.:\d])'
     match = re.search(pattern, text)
     
     if match:
@@ -36,8 +39,10 @@ def parse_time_format_colon(text: str) -> Optional[str]:
         
         # 处理毫秒部分
         if ms:
-            ms = ms.ljust(3, '0')[:3]  # 补齐或截断到3位
+            # 毫秒必须是3位（正则已保证）
+            pass
         else:
+            # 没有毫秒部分，设为000
             ms = '000'
         
         return f"{h:02d}:{m:02d}:{s:02d}.{ms}"
@@ -59,13 +64,16 @@ def parse_time_format_digits(text: str) -> Optional[str]:
         "123456789"     -> "12:34:56.789"
         "012345678"     -> "01:23:45.678"
         "1234567890"    -> "12:34:56.789"
+        "123456"        -> "12:34:56.000" (无毫秒)
+        "12345678"      -> None (毫秒位不足3位，拒绝识别)
     """
     # 提取所有连续数字
     numbers = re.findall(r'\d+', text)
     
     for num in numbers:
-        # 接受9-13位数字（HHMMSS 或 HHMMSSMMM）
-        if 6 <= len(num) <= 13:
+        # 只接受6位（HHMMSS无毫秒）或9位及以上（HHMMSSMMM有完整毫秒）
+        if len(num) == 6:
+            # 6位：HHMMSS，无毫秒部分
             try:
                 h = int(num[0:2])
                 m = int(num[2:4])
@@ -75,16 +83,30 @@ def parse_time_format_digits(text: str) -> Optional[str]:
                 if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
                     continue
                 
-                # 毫秒部分（如果有）
-                if len(num) > 6:
-                    ms = num[6:9].ljust(3, '0')[:3]
-                else:
-                    ms = '000'
+                return f"{h:02d}:{m:02d}:{s:02d}.000"
+                
+            except (ValueError, IndexError):
+                continue
+                
+        elif len(num) >= 9:
+            # 9位及以上：HHMMSSMMM...，有完整毫秒
+            try:
+                h = int(num[0:2])
+                m = int(num[2:4])
+                s = int(num[4:6])
+                
+                # 验证时间有效性
+                if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+                    continue
+                
+                # 取前3位毫秒（不补0，必须完整）
+                ms = num[6:9]
                 
                 return f"{h:02d}:{m:02d}:{s:02d}.{ms}"
                 
             except (ValueError, IndexError):
                 continue
+        # 7-8位的情况：毫秒位不完整，拒绝识别
     
     return None
 

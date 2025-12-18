@@ -247,8 +247,8 @@ class NetworkMatcher:
         匹配视频数据和网络日志
         
         重要：
-        - T_app（手机应用时间）对应手机端网络日志
-        - T_real（真实世界时间）对应电脑端网络日志
+        - 手机和电脑的网络日志都是在测试时记录的
+        - 因此都应该使用 T_app（手机应用时间）来计算时间偏移量
         
         Args:
             video_data: 视频分析数据
@@ -260,33 +260,28 @@ class NetworkMatcher:
             合并后的数据
         """
         result = []
-        phone_offset = None
-        pc_offset = None
+        time_offset = None
         
-        # 自动计算时间偏移量
-        if auto_offset:
-            # T_app 对应手机端日志
-            if phone_log:
-                phone_offset = self.calculate_time_offset(video_data, phone_log, time_field='T_app')
-                if phone_offset is None:
-                    print("[WARNING] 无法根据T_app计算手机端时间偏移量")
-                    print("[WARNING] 这可能导致无法匹配手机网络数据")
+        # 自动计算时间偏移量（使用T_app）
+        if auto_offset and (phone_log or pc_log):
+            # 手机和电脑的网络日志都在测试时记录，使用T_app时间
+            network_ref = phone_log if phone_log else pc_log
+            time_offset = self.calculate_time_offset(video_data, network_ref, time_field='T_app')
             
-            # T_real 对应电脑端日志
-            if pc_log:
-                pc_offset = self.calculate_time_offset(video_data, pc_log, time_field='T_real')
-                if pc_offset is None:
-                    print("[WARNING] 无法根据T_real计算电脑端时间偏移量")
-                    print("[WARNING] 这可能导致无法匹配电脑网络数据")
+            if time_offset is None:
+                print("[WARNING] 无法根据T_app计算时间偏移量")
+                print("[WARNING] 这可能导致无法匹配网络数据")
         
         for frame in video_data:
             timestamp = frame['timestamp']
             merged = frame.copy()
             
-            # 匹配手机ping（使用T_app对应的偏移量）
+            # 转换为绝对时间戳
+            absolute_timestamp = timestamp + time_offset if time_offset is not None else timestamp
+            
+            # 匹配手机ping
             if phone_log:
-                phone_absolute_ts = timestamp + phone_offset if phone_offset is not None else timestamp
-                phone_ping = self.find_nearest_ping(phone_log, phone_absolute_ts)
+                phone_ping = self.find_nearest_ping(phone_log, absolute_timestamp)
                 if phone_ping:
                     merged['phone_ping_ms'] = phone_ping['ping_ms']
                     merged['phone_status'] = phone_ping['status']
@@ -294,10 +289,9 @@ class NetworkMatcher:
                     merged['phone_ping_ms'] = None
                     merged['phone_status'] = 'no_data'
             
-            # 匹配电脑ping（使用T_real对应的偏移量）
+            # 匹配电脑ping
             if pc_log:
-                pc_absolute_ts = timestamp + pc_offset if pc_offset is not None else timestamp
-                pc_ping = self.find_nearest_ping(pc_log, pc_absolute_ts)
+                pc_ping = self.find_nearest_ping(pc_log, absolute_timestamp)
                 if pc_ping:
                     merged['pc_ping_ms'] = pc_ping['ping_ms']
                     merged['pc_status'] = pc_ping['status']

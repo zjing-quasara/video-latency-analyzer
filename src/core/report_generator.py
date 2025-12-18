@@ -374,8 +374,79 @@ class ReportGenerator:
         .right-panel {{ 
             flex: 1;
             min-width: 300px;
-            background: white; 
+            background: #f8f9fa; 
             overflow-y: auto;
+            padding: 0;
+        }}
+        
+        /* 统计卡片区域 */
+        .stats-section {{
+            background: white;
+            padding: 25px;
+            border-bottom: 3px solid #e9ecef;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }}
+        
+        .stats-cards {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 15px;
+        }}
+        
+        .stat-card {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transition: transform 0.2s;
+        }}
+        
+        .stat-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+        }}
+        
+        .stat-card.primary {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }}
+        
+        .stat-card.success {{
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }}
+        
+        .stat-card.warning {{
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }}
+        
+        .stat-card.info {{
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }}
+        
+        .stat-card h3 {{
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 10px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        .stat-card .value {{
+            font-size: 36px;
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }}
+        
+        .stat-card .unit {{
+            font-size: 12px;
+            opacity: 0.8;
+        }}
+        
+        .content-section {{
             padding: 30px;
         }}
         
@@ -464,14 +535,15 @@ class ReportGenerator:
         
         <!-- 右侧：可滚动内容 -->
         <div class="right-panel">
-            <div class="tip">
-                <strong>交互提示：</strong> 鼠标悬停在曲线或表格上，左侧视频会自动定位到对应帧
-            </div>
-            
-            <h2>1. 延时分析</h2>
-            <div class="section">
-                <canvas id="delayChart"></canvas>
-            </div>
+            <div class="content-section" style="padding-top: 30px;">
+                <div class="tip">
+                    <strong>交互提示：</strong> 鼠标悬停在曲线或表格上，左侧视频会自动定位到对应帧
+                </div>
+                
+                <h2>1. 延时分析</h2>
+                <div class="section">
+                    <canvas id="delayChart"></canvas>
+                </div>
 """
         
         # 网络监控独立图表（可选，如果需要更详细的网络分析）
@@ -587,8 +659,9 @@ class ReportGenerator:
                     </tbody>
                 </table>
             </div>
-        </div>
-    </div>
+            </div><!-- end content-section -->
+        </div><!-- end right-panel -->
+    </div><!-- end main-layout -->
     
     <script>
         // ========== 可拖动分隔条功能 ==========
@@ -698,46 +771,59 @@ class ReportGenerator:
             const ctx = document.getElementById('delayChart').getContext('2d');
             
             // 准备数据集
-            const datasets = [{{
-                label: '视频延时 (ms)',
-                data: chartDelays,
-                borderColor: '#27ae60',
-                backgroundColor: 'rgba(39, 174, 96, 0.1)',
-                borderWidth: 3,
-                pointRadius: 0,
-                pointHoverRadius: 0,
-                tension: 0.4,
-                yAxisID: 'y'
-            }}];
+            const datasets = [];
             
-            // 如果有网络数据，添加网络Ping曲线
-            if (hasNetwork && networkPhonePing.length > 0) {{
-                datasets.push({{
-                    label: '手机Ping (ms)',
-                    data: networkPhonePing,
-                    borderColor: '#e74c3c',
-                    backgroundColor: 'rgba(231, 76, 60, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    tension: 0.4,
-                    yAxisID: 'y1'
-                }});
-            }}
-            
+            // 第1层：电脑Ping（背景阴影 - 淡蓝色）
             if (hasNetwork && networkPcPing.length > 0) {{
                 datasets.push({{
                     label: '电脑Ping (ms)',
                     data: networkPcPing,
-                    borderColor: '#3498db',
-                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
-                    borderWidth: 2,
+                    borderColor: 'rgba(52, 152, 219, 0.4)',
+                    backgroundColor: 'rgba(52, 152, 219, 0.15)',
+                    borderWidth: 1,
                     pointRadius: 0,
-                    pointHoverRadius: 0,
+                    pointHoverRadius: 5,
                     tension: 0.4,
-                    yAxisID: 'y1'
+                    fill: true,
+                    yAxisID: 'y1',
+                    order: 3
                 }});
             }}
+            
+            // 第2层：手机Ping（背景阴影 - 淡红色）
+            if (hasNetwork && networkPhonePing.length > 0) {{
+                datasets.push({{
+                    label: '手机Ping (ms)',
+                    data: networkPhonePing,
+                    borderColor: 'rgba(231, 76, 60, 0.4)',
+                    backgroundColor: 'rgba(231, 76, 60, 0.15)',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                    tension: 0.4,
+                    fill: true,
+                    yAxisID: 'y1',
+                    order: 2
+                }});
+            }}
+            
+            // 第3层：视频延时（主角 - 粗绿线）
+            datasets.push({{
+                label: '视频延时 (ms)',
+                data: chartDelays,
+                borderColor: '#27ae60',
+                backgroundColor: 'transparent',
+                borderWidth: 3,
+                pointRadius: 0,
+                pointHoverRadius: 7,
+                pointHoverBackgroundColor: '#27ae60',
+                pointHoverBorderColor: 'white',
+                pointHoverBorderWidth: 2,
+                tension: 0.4,
+                fill: false,
+                yAxisID: 'y',
+                order: 1
+            }});
             
             const chartConfig = {{
                 type: 'line',
@@ -778,12 +864,17 @@ class ReportGenerator:
                             position: 'left',
                             title: {{
                                 display: true,
-                                text: '延时 (ms)',
+                                text: '📊 延时 (ms)',
                                 color: '#27ae60',
-                                font: {{ size: 13, weight: 'bold' }}
+                                font: {{ size: 14, weight: 'bold' }}
                             }},
                             ticks: {{
-                                color: '#27ae60'
+                                color: '#27ae60',
+                                font: {{ size: 12, weight: '600' }}
+                            }},
+                            grid: {{
+                                color: 'rgba(39, 174, 96, 0.1)',
+                                lineWidth: 1
                             }}
                         }}
                     }},
@@ -810,15 +901,17 @@ class ReportGenerator:
                     position: 'right',
                     title: {{
                         display: true,
-                        text: 'Ping延迟 (ms)',
-                        color: '#e74c3c',
-                        font: {{ size: 13, weight: 'bold' }}
+                        text: '📶 Ping延迟 (ms)',
+                        color: '#95a5a6',
+                        font: {{ size: 14, weight: 'bold' }}
                     }},
                     ticks: {{
-                        color: '#e74c3c'
+                        color: '#95a5a6',
+                        font: {{ size: 12 }}
                     }},
                     grid: {{
-                        drawOnChartArea: false
+                        drawOnChartArea: false,
+                        color: 'rgba(149, 165, 166, 0.1)'
                     }}
                 }};
             }}

@@ -792,9 +792,23 @@ def _verify_and_expand_roi(
     # 检查与排除区域的重叠
     if exclude_roi:
         overlap = calculate_overlap(bbox, exclude_roi)
-        if overlap > 0.5:
+        
+        # 计算包含率：bbox在exclude_roi内的比例
+        x1, y1, x2, y2 = bbox
+        ex1, ey1, ex2, ey2 = exclude_roi
+        
+        x_overlap = max(0, min(x2, ex2) - max(x1, ex1))
+        y_overlap = max(0, min(y2, ey2) - max(y1, ey1))
+        intersection = x_overlap * y_overlap
+        
+        area_bbox = (x2 - x1) * (y2 - y1)
+        containment = intersection / area_bbox if area_bbox > 0 else 0
+        
+        # 拒绝条件：IoU > 0.5 或 包含率 > 0.5
+        # 包含率检查解决了"小框完全在大框内但IoU不高"的问题
+        if overlap > 0.5 or containment > 0.5:
             if debug:
-                print(f"[DEBUG]   [NG] 与T_app重叠 {overlap:.2f}")
+                print(f"[DEBUG]   [NG] 与T_app重叠 IoU={overlap:.2f}, 包含率={containment:.2f}")
             return None, None, 0.0
     
     # 格式完整性检查（传入原始文本）

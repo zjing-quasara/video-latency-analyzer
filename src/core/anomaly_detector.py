@@ -35,9 +35,9 @@ class AnomalyDetector:
         # 正常延迟历史（用于统计检测，保留兼容性）
         self.normal_delays: List[float] = []
         
-        # 检测器B：可疑帧记录（用于回溯检测）
-        # 格式：{frame_idx: {'app_time': xxx, 'real_time': xxx, 'refutation_count': N}}
-        self.suspicious_frames: Dict[int, Dict] = {}
+        # 检测器B：正常帧历史记录（用于回退检测）
+        # 格式：{frame_idx: {'app_time': xxx, 'real_time': xxx}}
+        self.normal_frames: Dict[int, Dict] = {}
         
         # 当前帧号（用于回溯）
         self.current_frame_idx: int = 0
@@ -103,62 +103,60 @@ class AnomalyDetector:
         self,
         frame_idx: int,
         real_time_ms: float
-    ) -> List[int]:
+    ) -> Tuple[bool, Optional[str]]:
         """
-        检测器B：连续回退检测（回溯触发）
+        检测器B：回退检测（检查所有正常帧，只和前2帧比对）
         
         检测逻辑：
-        1. 检查当前帧是否比某个历史帧小（回退）
-        2. 如果连续2帧都比某个历史帧小 → 触发回溯
-        3. 返回需要重识别的可疑帧列表
+        检查当前帧是否比前2个正常帧小（回退）
         
         Args:
             frame_idx: 当前帧索引
             real_time_ms: 当前T_real时间
             
         Returns:
-            需要重识别的可疑帧索引列表
+            (是否正常, 异常原因)
         """
-        triggered_frames = []
-        
-        # 遍历可疑帧，检查是否被"反驳"
         tolerance = 1000  # 1秒容错，避免OCR微小抖动
         
-        for suspicious_idx, info in list(self.suspicious_frames.items()):
-            suspicious_time = info['real_time']
-            
-            # 如果当前帧比可疑帧小（回退）
-            if real_time_ms < suspicious_time - tolerance:
-                # 增加反驳计数
-                info['refutation_count'] += 1
-                
-                # 如果连续2帧反驳 → 触发回溯
-                if info['refutation_count'] >= 2:
-                    triggered_frames.append(suspicious_idx)
-                    # 从可疑列表移除（已经处理）
-                    del self.suspicious_frames[suspicious_idx]
+        # 获取前2个正常帧（按帧号排序，只取当前帧之前的）
+        prev_frames = sorted([idx for idx in self.normal_frames.keys() if idx < frame_idx], reverse=True)[:2]
         
-        return triggered_frames
+        # 检查是否比前2帧小（回退）
+        for prev_idx in prev_frames:
+            prev_time = self.normal_frames[prev_idx]['real_time']
+            
+            if real_time_ms < prev_time - tolerance:
+                # 回退了
+                return False, f"时间回退(当前={real_time_ms:.0f}ms < 帧{prev_idx}={prev_time:.0f}ms)"
+        
+        # 没有回退
+        return True, None
     
-    def add_suspicious_frame(
+    def add_normal_frame(
         self,
         frame_idx: int,
         app_time_ms: float,
         real_time_ms: float
     ):
         """
-        添加可疑帧到监控列表
+        添加正常帧到历史记录（供检测器B使用）
         
         Args:
             frame_idx: 帧索引
             app_time_ms: T_app时间
             real_time_ms: T_real时间
         """
-        self.suspicious_frames[frame_idx] = {
+        self.normal_frames[frame_idx] = {
             'app_time': app_time_ms,
-            'real_time': real_time_ms,
-            'refutation_count': 0
+            'real_time': real_time_ms
         }
+        
+        # 维护历史记录大小（最多保留100帧）
+        if len(self.normal_frames) > 100:
+            # 删除最老的帧
+            oldest_idx = min(self.normal_frames.keys())
+            del self.normal_frames[oldest_idx]
     
     def update_frame(
         self,
@@ -168,6 +166,7 @@ class AnomalyDetector:
     ):
         """
         更新当前帧的时间（仅在通过检查后调用）
+        同时添加到正常帧历史记录
         
         Args:
             frame_idx: 帧索引
@@ -177,6 +176,9 @@ class AnomalyDetector:
         self.last_app_time_ms = app_time_ms
         self.last_real_time_ms = real_time_ms
         self.current_frame_idx = frame_idx
+        
+        # 添加到正常帧历史记录（供检测器B使用）
+        self.add_normal_frame(frame_idx, app_time_ms, real_time_ms)
     
     def add_normal_delay(self, delay_ms: float):
         """
@@ -247,7 +249,7 @@ class AnomalyDetector:
     def reset(self):
         """重置检测器"""
         self.normal_delays.clear()
-        self.suspicious_frames.clear()
+        self.normal_frames.clear()
         self.frame_history.clear()
         self.last_app_time_ms = None
         self.last_real_time_ms = None

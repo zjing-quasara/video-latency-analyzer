@@ -286,12 +286,10 @@ class AnalysisWorker(QThread):
                             status = "ok_rechecked"
                             error_reason = f"重识别修正({reason_a})"
                         else:
-                            # 两次一致 → 接受原值，但标记为可疑（待检测器B验证）
-                            self.logger.info(f"帧{frame_idx}: 重识别一致，暂时接受")
-                            status = "ok_verified"
-                            error_reason = "重识别一致(待后续验证)"
-                            # 添加到可疑帧列表
-                            self.anomaly_detector.add_suspicious_frame(frame_idx, app_time_ms, real_time_ms)
+                            # 两次一致 → 识别稳定可靠，直接标记为ok
+                            self.logger.info(f"帧{frame_idx}: 重识别一致，识别稳定可靠")
+                            status = "ok"
+                            error_reason = ""
                     
                     elif not is_normal_a:
                         # 硬性错误（如delay超限）
@@ -312,64 +310,19 @@ class AnalysisWorker(QThread):
                                 error_reason = stat_reason
                                 self.logger.warning(f"帧{frame_idx}: 统计异常 - {stat_reason}")
                     
-                    # 更新时间（仅当通过检查或已修正）
-                    # 注意：ok_verified（可疑帧）不更新last_time，避免污染后续判断
+                    # ========== 检测器B：回退检测（检查所有正常帧，只和前2帧比对）==========
                     if status in ["ok", "ok_rechecked"]:
-                        self.anomaly_detector.update_frame(frame_idx, app_time_ms, real_time_ms)
-                    
-                    # ========== 检测器B：连续回退检测 ==========
-                    if status in ["ok", "ok_rechecked"]:  # 只对正常帧触发检测器B
-                        triggered_frames = self.anomaly_detector.check_detector_b(frame_idx, real_time_ms)
+                        # 先检查回退
+                        is_normal_b, reason_b = self.anomaly_detector.check_detector_b(frame_idx, real_time_ms)
                         
-                        if triggered_frames:
-                            self.logger.info(f"帧{frame_idx}: 检测器B触发，可疑帧: {triggered_frames}")
-                            
-                            # 对每个可疑帧进行回溯验证
-                            for suspicious_idx in triggered_frames:
-                                if suspicious_idx not in frame_cache:
-                                    self.logger.warning(f"帧{suspicious_idx}不在缓存中，跳过回溯")
-                                    continue
-                                
-                                # 重识别可疑帧
-                                suspicious_frame_data = frame_cache[suspicious_idx]
-                                suspicious_frame = suspicious_frame_data['frame']
-                                suspicious_real_roi = suspicious_frame_data['real_roi']
-                                
-                                if suspicious_real_roi:
-                                    _, real_time_str_new, _ = detect_time_real_optimized(
-                                        frame=suspicious_frame,
-                                        frame_idx=suspicious_idx,
-                                        roi_tracker=self.roi_tracker,
-                                        ocr=self.ocr,
-                                        exclude_roi=self.app_roi,
-                                        time_format='auto',
-                                        debug=False
-                                    )
-                                    real_time_ms_new = parse_time_to_ms(real_time_str_new) if real_time_str_new else None
-                                    
-                                    original_time = suspicious_frame_data['real_time_ms']
-                                    
-                                    if real_time_ms_new and abs(real_time_ms_new - real_time_ms) < 1000:
-                                        # 重识别后接近当前帧 → 修正可疑帧
-                                        self.logger.info(f"回溯修正帧{suspicious_idx}: {original_time}ms → {real_time_ms_new}ms")
-                                        
-                                        # 修正results中的数据
-                                        for r in results:
-                                            if r['frame_idx'] == suspicious_idx:
-                                                r['status'] = 'ok_revised'
-                                                r['real_time_str'] = real_time_str_new
-                                                r['delay_ms'] = r.get('app_time_ms', 0) - real_time_ms_new if r.get('app_time_ms') else None
-                                                break
-                                    else:
-                                        # 重识别后还是不对 → 多数派判定
-                                        self.logger.info(f"回溯判定帧{suspicious_idx}为wrong（多数派原则）")
-                                        
-                                        # 标记可疑帧为wrong
-                                        for r in results:
-                                            if r['frame_idx'] == suspicious_idx:
-                                                r['status'] = 'wrong'
-                                                r['error_reason'] = '连续2帧反驳，多数派判定'
-                                                break
+                        if not is_normal_b:
+                            # 回退检测不通过
+                            status = "wrong"
+                            error_reason = reason_b
+                            self.logger.warning(f"帧{frame_idx}: 检测器B判定异常 - {reason_b}")
+                        else:
+                            # 回退检测通过，更新帧信息
+                            self.anomaly_detector.update_frame(frame_idx, app_time_ms, real_time_ms)
                 
                 # 收集数据（用于HTML报告）
                 results.append({

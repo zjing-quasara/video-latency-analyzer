@@ -53,14 +53,46 @@ class AnalysisWorker(QThread):
             self.log_message.emit("初始化 OCR 引擎...")
             try:
                 from paddleocr import PaddleOCR
+                import os
+                import sys
                 
-                # PaddleOCR初始化（简单配置）
-                self.ocr = PaddleOCR(
-                    use_angle_cls=False,
-                    lang='en'
-                )
+                # 确定模型路径（支持打包后的exe）
+                if getattr(sys, 'frozen', False):
+                    # 打包后的exe环境
+                    base_path = Path(sys._MEIPASS)
+                else:
+                    # 开发环境
+                    base_path = Path(__file__).parent.parent.parent
                 
-                self.log_message.emit(f"[OK] OCR 引擎初始化完成")
+                models_path = base_path / "models" / "whl"
+                
+                # 检查本地模型是否存在
+                if models_path.exists():
+                    self.log_message.emit("使用本地OCR模型...")
+                    self.logger.info(f"使用本地模型: {models_path}")
+                    
+                    # 使用本地模型
+                    self.ocr = PaddleOCR(
+                        use_angle_cls=False,
+                        lang='en',
+                        det_model_dir=str(models_path / "det" / "en" / "en_PP-OCRv3_det_infer"),
+                        rec_model_dir=str(models_path / "rec" / "en" / "en_PP-OCRv4_rec_infer"),
+                        cls_model_dir=str(models_path / "cls" / "ch_ppocr_mobile_v2.0_cls_infer"),
+                        show_log=False
+                    )
+                    self.log_message.emit(f"[OK] OCR 引擎初始化完成（使用本地模型）")
+                else:
+                    # 使用默认配置（会自动下载模型）
+                    self.log_message.emit("首次运行，正在下载OCR模型（约15MB）...")
+                    self.logger.info("本地模型不存在，使用默认配置（会自动下载）")
+                    
+                    self.ocr = PaddleOCR(
+                        use_angle_cls=False,
+                        lang='en',
+                        show_log=False
+                    )
+                    self.log_message.emit(f"[OK] OCR 引擎初始化完成（已下载模型）")
+                
                 self.logger.info(f"OCR引擎初始化成功")
             except Exception as e:
                 error_msg = f"OCR引擎初始化失败: {e}"
@@ -120,25 +152,18 @@ class AnalysisWorker(QThread):
         results = []
         annotated_frames = []
         
-        # 保存CSV
+        # 帧缓存（用于回溯重识别）
+        # 格式：{frame_idx: {'frame': np.array, 'real_roi': tuple}}
+        frame_cache = {}
+        max_cache_size = 50  # 最多缓存50帧
+        
+        # 保存CSV（最后统一写入，因为可能有回溯修正）
         csv_path = report_dir / f"{report_folder_name}.csv"
-        with csv_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "video_name", "frame_idx", "video_time_s",
-                "app_time_str", "app_time_ms",
-                "real_time_str", "real_time_ms",
-                "delay_ms", "status", "error_reason"
-            ])
-            
-            frame_idx = 0
-            processed_count = 0
-            
-            # 时间单调性验证
-            last_app_time_ms = None
-            last_real_time_ms = None
-            
-            while True:
+        
+        frame_idx = 0
+        processed_count = 0
+        
+        while True:
                 # 检查是否超过帧数限制
                 if self.frame_limit != float('inf') and frame_idx > self.frame_limit:
                     break
@@ -165,22 +190,37 @@ class AnalysisWorker(QThread):
                         app_roi=self.app_roi,
                         ocr=self.ocr,
                         time_format='auto',
-                        debug=False  # 关闭调试输出，避免GUI卡顿
+                        debug=False
                     )
                 else:
                     app_time_str = None
                     app_conf = 0.0
                 
-                # 2. 识别 T_real（真实世界时间）- 使用优化版
+                # 2. 识别 T_real（真实世界时间）
                 real_roi, real_time_str, real_conf = detect_time_real_optimized(
                     frame=frame,
                     frame_idx=frame_idx,
                     roi_tracker=self.roi_tracker,
                     ocr=self.ocr,
-                    exclude_roi=self.app_roi,  # 排除T_app区域
+                    exclude_roi=self.app_roi,
                     time_format='auto',
-                    debug=False  # 关闭调试输出，避免GUI卡顿
+                    debug=False
                 )
+                
+                # 缓存帧和ROI（用于可能的重识别）
+                frame_cache[frame_idx] = {
+                    'frame': frame.copy(),
+                    'real_roi': real_roi,
+                    'app_time_str': app_time_str,
+                    'app_time_ms': None,  # 稍后填充
+                    'real_time_str': real_time_str,
+                    'real_time_ms': None   # 稍后填充
+                }
+                
+                # 维护缓存大小
+                if len(frame_cache) > max_cache_size:
+                    oldest_idx = min(frame_cache.keys())
+                    del frame_cache[oldest_idx]
                 
                 # 调试日志
                 if frame_idx == 0 or frame_idx % 20 == 0:
@@ -196,10 +236,15 @@ class AnalysisWorker(QThread):
                 app_time_ms = parse_time_to_ms(app_time_str) if app_time_str else None
                 real_time_ms = parse_time_to_ms(real_time_str) if real_time_str else None
                 
+                # 更新缓存
+                frame_cache[frame_idx]['app_time_ms'] = app_time_ms
+                frame_cache[frame_idx]['real_time_ms'] = real_time_ms
+                
                 # 计算延时
                 delay_ms = None
                 status = "ok"
                 error_reason = ""
+                need_recheck = False
                 
                 # 基本检查
                 if app_time_ms is None:
@@ -212,51 +257,130 @@ class AnalysisWorker(QThread):
                     # 两者都识别成功，计算延迟
                     delay_ms = app_time_ms - real_time_ms
                     
-                    # ========== 异常检测：立即检查 ==========
-                    is_normal, anomaly_reason = self.anomaly_detector.check_immediate(
-                        app_time_ms, real_time_ms, delay_ms
+                    # ========== 检测器A：跳变一致性检测 ==========
+                    is_normal_a, reason_a, need_recheck = self.anomaly_detector.check_detector_a(
+                        frame_idx, app_time_ms, real_time_ms, delay_ms
                     )
                     
-                    if not is_normal:
-                        # 异常：标记wrong
+                    if not is_normal_a and need_recheck:
+                        # 跳变不一致 → 重新识别T_real
+                        self.logger.info(f"帧{frame_idx}: 检测器A触发 - {reason_a}，重新识别T_real")
+                        
+                        _, real_time_str_recheck, real_conf_recheck = detect_time_real_optimized(
+                            frame=frame,
+                            frame_idx=frame_idx,
+                            roi_tracker=self.roi_tracker,
+                            ocr=self.ocr,
+                            exclude_roi=self.app_roi,
+                            time_format='auto',
+                            debug=False
+                        )
+                        real_time_ms_recheck = parse_time_to_ms(real_time_str_recheck) if real_time_str_recheck else None
+                        
+                        if real_time_ms_recheck and real_time_ms_recheck != real_time_ms:
+                            # 两次不一致 → 使用重识别值
+                            self.logger.info(f"帧{frame_idx}: 重识别不一致，使用新值 {real_time_str_recheck}")
+                            real_time_str = real_time_str_recheck
+                            real_time_ms = real_time_ms_recheck
+                            delay_ms = app_time_ms - real_time_ms
+                            status = "ok_rechecked"
+                            error_reason = f"重识别修正({reason_a})"
+                        else:
+                            # 两次一致 → 接受原值，但标记为可疑（待检测器B验证）
+                            self.logger.info(f"帧{frame_idx}: 重识别一致，暂时接受")
+                            status = "ok_verified"
+                            error_reason = "重识别一致(待后续验证)"
+                            # 添加到可疑帧列表
+                            self.anomaly_detector.add_suspicious_frame(frame_idx, app_time_ms, real_time_ms)
+                    
+                    elif not is_normal_a:
+                        # 硬性错误（如delay超限）
                         status = "wrong"
-                        error_reason = anomaly_reason
-                        self.logger.warning(f"帧{frame_idx}: 延迟异常 - {anomaly_reason}")
+                        error_reason = reason_a
+                        self.logger.warning(f"帧{frame_idx}: 检测器A判定异常 - {reason_a}")
+                    
                     else:
-                        # 正常：加入历史
+                        # 检测器A通过
+                        status = "ok"
                         self.anomaly_detector.add_normal_delay(delay_ms)
                         
-                        # 每30帧做一次统计检测
+                        # 统计检测（保留兼容性）
                         if frame_idx % 30 == 0 and frame_idx > 0:
                             is_stat_normal, stat_reason, z_score = self.anomaly_detector.check_statistical(delay_ms)
                             if not is_stat_normal:
                                 status = "wrong"
                                 error_reason = stat_reason
                                 self.logger.warning(f"帧{frame_idx}: 统计异常 - {stat_reason}")
-                
-                # 更新上一帧时间（在异常检测类中已更新）
-                if app_time_ms is not None:
-                    last_app_time_ms = app_time_ms
-                if real_time_ms is not None:
-                    last_real_time_ms = real_time_ms
-                
-                # 保存到 CSV
-                writer.writerow([
-                    video_path.name, frame_idx,
-                    f"{video_time_s:.6f}" if video_time_s is not None else "",
-                    app_time_str or "", app_time_ms or "",
-                    real_time_str or "", real_time_ms or "",
-                    delay_ms if delay_ms is not None else "", status, error_reason
-                ])
+                    
+                    # 更新时间（仅当通过检查或已修正）
+                    # 注意：ok_verified（可疑帧）不更新last_time，避免污染后续判断
+                    if status in ["ok", "ok_rechecked"]:
+                        self.anomaly_detector.update_frame(frame_idx, app_time_ms, real_time_ms)
+                    
+                    # ========== 检测器B：连续回退检测 ==========
+                    if status in ["ok", "ok_rechecked"]:  # 只对正常帧触发检测器B
+                        triggered_frames = self.anomaly_detector.check_detector_b(frame_idx, real_time_ms)
+                        
+                        if triggered_frames:
+                            self.logger.info(f"帧{frame_idx}: 检测器B触发，可疑帧: {triggered_frames}")
+                            
+                            # 对每个可疑帧进行回溯验证
+                            for suspicious_idx in triggered_frames:
+                                if suspicious_idx not in frame_cache:
+                                    self.logger.warning(f"帧{suspicious_idx}不在缓存中，跳过回溯")
+                                    continue
+                                
+                                # 重识别可疑帧
+                                suspicious_frame_data = frame_cache[suspicious_idx]
+                                suspicious_frame = suspicious_frame_data['frame']
+                                suspicious_real_roi = suspicious_frame_data['real_roi']
+                                
+                                if suspicious_real_roi:
+                                    _, real_time_str_new, _ = detect_time_real_optimized(
+                                        frame=suspicious_frame,
+                                        frame_idx=suspicious_idx,
+                                        roi_tracker=self.roi_tracker,
+                                        ocr=self.ocr,
+                                        exclude_roi=self.app_roi,
+                                        time_format='auto',
+                                        debug=False
+                                    )
+                                    real_time_ms_new = parse_time_to_ms(real_time_str_new) if real_time_str_new else None
+                                    
+                                    original_time = suspicious_frame_data['real_time_ms']
+                                    
+                                    if real_time_ms_new and abs(real_time_ms_new - real_time_ms) < 1000:
+                                        # 重识别后接近当前帧 → 修正可疑帧
+                                        self.logger.info(f"回溯修正帧{suspicious_idx}: {original_time}ms → {real_time_ms_new}ms")
+                                        
+                                        # 修正results中的数据
+                                        for r in results:
+                                            if r['frame_idx'] == suspicious_idx:
+                                                r['status'] = 'ok_revised'
+                                                r['real_time_str'] = real_time_str_new
+                                                r['delay_ms'] = r.get('app_time_ms', 0) - real_time_ms_new if r.get('app_time_ms') else None
+                                                break
+                                    else:
+                                        # 重识别后还是不对 → 多数派判定
+                                        self.logger.info(f"回溯判定帧{suspicious_idx}为wrong（多数派原则）")
+                                        
+                                        # 标记可疑帧为wrong
+                                        for r in results:
+                                            if r['frame_idx'] == suspicious_idx:
+                                                r['status'] = 'wrong'
+                                                r['error_reason'] = '连续2帧反驳，多数派判定'
+                                                break
                 
                 # 收集数据（用于HTML报告）
                 results.append({
                     'frame_idx': frame_idx,
                     'video_time_s': video_time_s,
                     'app_time_str': app_time_str,
+                    'app_time_ms': app_time_ms,
                     'real_time_str': real_time_str,
                     'delay_ms': delay_ms,
-                    'status': status
+                    'status': status,
+                    'error_reason': error_reason
                 })
                 
                 # 绘制标定图
@@ -297,10 +421,36 @@ class AnalysisWorker(QThread):
                 
                 frame_idx += 1
                 processed_count += 1
-            
-            cap.release()
+        
+        cap.release()
         
         self.log_message.emit(f"处理完成，共 {processed_count} 帧")
+        
+        # ========== 统一写入CSV（支持回溯修正） ==========
+        self.log_message.emit("正在写入CSV...")
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "video_name", "frame_idx", "video_time_s",
+                "app_time_str", "app_time_ms",
+                "real_time_str", "real_time_ms",
+                "delay_ms", "status", "error_reason"
+            ])
+            
+            for result in results:
+                writer.writerow([
+                    video_path.name,
+                    result['frame_idx'],
+                    f"{result['video_time_s']:.6f}" if result['video_time_s'] is not None else "",
+                    result.get('app_time_str', '') or "",
+                    result.get('app_time_ms', '') or "",
+                    result.get('real_time_str', '') or "",
+                    result.get('real_time_ms', '') or "",
+                    result.get('delay_ms', '') if result.get('delay_ms') is not None else "",
+                    result.get('status', ''),
+                    result.get('error_reason', '')
+                ])
+        
         self.log_message.emit("CSV报告已保存: " + csv_path.name)
         self.logger.info(f"CSV已保存: {csv_path}")
         

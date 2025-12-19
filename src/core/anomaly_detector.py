@@ -1,83 +1,186 @@
 """
-延迟异常检测模块
-使用多层检测策略识别异常延迟值
+延迟异常检测模块 - 并联检测器架构
+使用两个独立的检测器：
+1. 检测器A：跳变一致性检测（实时）- 基于时钟同步
+2. 检测器B：连续回退检测（回溯）- 基于多数派原则
 """
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import statistics
 
 
 class AnomalyDetector:
-    """延迟异常检测器"""
+    """
+    延迟异常检测器 - 并联架构
+    
+    设计理念：
+    - 不使用中位数窗口（不依赖历史统计）
+    - 基于物理约束：两个时钟应该同步
+    - 实时检测 + 回溯修正
+    """
     
     def __init__(self, hard_delay_max_ms: float = 3000):
         """
         初始化检测器
         
         Args:
-            hard_delay_max_ms: 硬性延时上限（毫秒），超过此值标记为wrong
+            hard_delay_max_ms: 硬性延时上限（毫秒），超过此值直接标记为wrong
         """
-        self.normal_delays: List[float] = []  # 正常延迟值历史
-        self.last_app_time_ms: Optional[float] = None  # 上一帧T_app(ms)
-        self.last_real_time_ms: Optional[float] = None  # 上一帧T_real(ms)
-        self.median: Optional[float] = None  # 中位数
-        self.mad: Optional[float] = None  # MAD值
-        self.hard_delay_max_ms = hard_delay_max_ms  # 硬性延时上限
+        # 基础配置
+        self.hard_delay_max_ms = hard_delay_max_ms
+        
+        # 上一帧的时间（用于计算增量）
+        self.last_app_time_ms: Optional[float] = None
+        self.last_real_time_ms: Optional[float] = None
+        
+        # 正常延迟历史（用于统计检测，保留兼容性）
+        self.normal_delays: List[float] = []
+        
+        # 检测器B：可疑帧记录（用于回溯检测）
+        # 格式：{frame_idx: {'app_time': xxx, 'real_time': xxx, 'refutation_count': N}}
+        self.suspicious_frames: Dict[int, Dict] = {}
+        
+        # 当前帧号（用于回溯）
+        self.current_frame_idx: int = 0
+        
+        # 帧历史记录（用于回溯重识别）
+        # 格式：{frame_idx: {'app_time': xxx, 'real_time': xxx, 'delay': xxx, 'status': xxx}}
+        self.frame_history: Dict[int, Dict] = {}
     
-    def check_immediate(
+    def check_detector_a(
         self,
+        frame_idx: int,
         app_time_ms: float,
         real_time_ms: float,
         delay_ms: float
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[str], bool]:
         """
-        立即检测（硬阈值）- 在计算延迟时立即调用
+        检测器A：跳变一致性检测（实时触发）
         
-        检测内容：
-        1. 硬性延时上限（用户可配置）
-        2. 时间倒退
-        3. 物理极限（>10秒）
-        4. 负延迟太大（<-5秒）
+        基于物理约束：T_app和T_real应该同步增长
+        如果 |ΔT_app - ΔT_real| 太大 → 需要重识别
         
         Args:
+            frame_idx: 帧索引
             app_time_ms: T_app时间（毫秒）
             real_time_ms: T_real时间（毫秒）
             delay_ms: 延迟值（毫秒）
             
         Returns:
-            (是否正常, 异常原因)
-            - True: 正常，可以加入历史
-            - False: 异常，不加入历史
+            (是否正常, 异常原因, 是否需要重识别)
         """
-        # 检查0: 硬性延时上限（最高优先级）
+        # 硬性延时上限（最高优先级）
         if delay_ms > self.hard_delay_max_ms:
-            return False, f"延迟超过硬性上限{self.hard_delay_max_ms}ms: 实际{delay_ms:.0f}ms"
+            return False, f"延迟超过硬性上限{self.hard_delay_max_ms}ms", False
         
-        # 检查1: 时间倒退
-        if self.last_app_time_ms is not None:
-            if app_time_ms < self.last_app_time_ms:
-                return False, "T_app时间倒退"
-        
-        if self.last_real_time_ms is not None:
-            if real_time_ms < self.last_real_time_ms:
-                return False, "T_real时间倒退"
-        
-        # 检查2: 物理极限（延迟>10秒）
+        # 物理极限检查
         if abs(delay_ms) > 10000:
-            return False, f"延迟超过物理极限: {delay_ms/1000:.1f}秒"
+            return False, f"延迟超过物理极限: {delay_ms/1000:.1f}秒", False
         
-        # 检查3: 负延迟太大（T_real比T_app早5秒+）
         if delay_ms < -5000:
-            return False, f"负延迟过大: {delay_ms/1000:.1f}秒"
+            return False, f"负延迟过大: {delay_ms/1000:.1f}秒", False
         
-        # 更新上一帧时间
+        # 如果没有上一帧，跳过跳变检测
+        if self.last_app_time_ms is None or self.last_real_time_ms is None:
+            return True, None, False
+        
+        # 计算时间增量
+        delta_app = app_time_ms - self.last_app_time_ms
+        delta_real = real_time_ms - self.last_real_time_ms
+        
+        # 跳变一致性检查
+        # 阈值：至少500ms 或 delta_app的2倍
+        threshold = max(500, abs(delta_app) * 2.0)
+        increment_diff = abs(delta_app - delta_real)
+        
+        if increment_diff > threshold:
+            # 跳变不一致 → 需要重识别
+            return False, f"时钟不同步(ΔT_app={delta_app:.0f}ms, ΔT_real={delta_real:.0f}ms, 差异={increment_diff:.0f}ms)", True
+        
+        # 检查通过
+        return True, None, False
+    
+    def check_detector_b(
+        self,
+        frame_idx: int,
+        real_time_ms: float
+    ) -> List[int]:
+        """
+        检测器B：连续回退检测（回溯触发）
+        
+        检测逻辑：
+        1. 检查当前帧是否比某个历史帧小（回退）
+        2. 如果连续2帧都比某个历史帧小 → 触发回溯
+        3. 返回需要重识别的可疑帧列表
+        
+        Args:
+            frame_idx: 当前帧索引
+            real_time_ms: 当前T_real时间
+            
+        Returns:
+            需要重识别的可疑帧索引列表
+        """
+        triggered_frames = []
+        
+        # 遍历可疑帧，检查是否被"反驳"
+        tolerance = 1000  # 1秒容错，避免OCR微小抖动
+        
+        for suspicious_idx, info in list(self.suspicious_frames.items()):
+            suspicious_time = info['real_time']
+            
+            # 如果当前帧比可疑帧小（回退）
+            if real_time_ms < suspicious_time - tolerance:
+                # 增加反驳计数
+                info['refutation_count'] += 1
+                
+                # 如果连续2帧反驳 → 触发回溯
+                if info['refutation_count'] >= 2:
+                    triggered_frames.append(suspicious_idx)
+                    # 从可疑列表移除（已经处理）
+                    del self.suspicious_frames[suspicious_idx]
+        
+        return triggered_frames
+    
+    def add_suspicious_frame(
+        self,
+        frame_idx: int,
+        app_time_ms: float,
+        real_time_ms: float
+    ):
+        """
+        添加可疑帧到监控列表
+        
+        Args:
+            frame_idx: 帧索引
+            app_time_ms: T_app时间
+            real_time_ms: T_real时间
+        """
+        self.suspicious_frames[frame_idx] = {
+            'app_time': app_time_ms,
+            'real_time': real_time_ms,
+            'refutation_count': 0
+        }
+    
+    def update_frame(
+        self,
+        frame_idx: int,
+        app_time_ms: float,
+        real_time_ms: float
+    ):
+        """
+        更新当前帧的时间（仅在通过检查后调用）
+        
+        Args:
+            frame_idx: 帧索引
+            app_time_ms: T_app时间
+            real_time_ms: T_real时间
+        """
         self.last_app_time_ms = app_time_ms
         self.last_real_time_ms = real_time_ms
-        
-        return True, None
+        self.current_frame_idx = frame_idx
     
     def add_normal_delay(self, delay_ms: float):
         """
-        添加正常延迟值到历史（通过立即检测后调用）
+        添加正常延迟值到历史（保留兼容性）
         
         Args:
             delay_ms: 延迟值（毫秒）
@@ -90,9 +193,7 @@ class AnomalyDetector:
     
     def check_statistical(self, delay_ms: float) -> Tuple[bool, Optional[str], Optional[float]]:
         """
-        统计检测（MAD方法）- 每30帧批量调用一次
-        
-        使用MAD (Median Absolute Deviation) 检测异常值
+        统计检测（MAD方法）- 保留兼容性
         
         Args:
             delay_ms: 待检测的延迟值
@@ -102,41 +203,34 @@ class AnomalyDetector:
         """
         # 前提：至少有30个正常样本
         if len(self.normal_delays) < 30:
-            return True, None, None  # 样本不足，暂不检测
+            return True, None, None
         
         # 计算中位数和MAD
-        self.median = statistics.median(self.normal_delays)
+        median = statistics.median(self.normal_delays)
         
         # MAD = median(|xi - median|)
-        absolute_deviations = [abs(d - self.median) for d in self.normal_delays]
-        self.mad = statistics.median(absolute_deviations)
+        absolute_deviations = [abs(d - median) for d in self.normal_delays]
+        mad = statistics.median(absolute_deviations)
         
-        # 避免MAD为0（所有值完全相同）
-        if self.mad < 0.01:
-            self.mad = 0.01
+        # 避免MAD为0
+        if mad < 0.01:
+            mad = 0.01
         
         # 计算Modified Z-Score
-        # z = 0.6745 * (x - median) / MAD
-        z_score = 0.6745 * (delay_ms - self.median) / self.mad
+        z_score = 0.6745 * (delay_ms - median) / mad
         
-        # 阈值：5.0（非常宽松，只抓最离谱的异常）
+        # 阈值：5.0（宽松）
         if abs(z_score) > 5.0:
             return False, f"统计异常: z-score={z_score:.2f}", z_score
         
         return True, None, z_score
     
     def get_stats(self) -> dict:
-        """
-        获取统计信息
-        
-        Returns:
-            统计字典
-        """
+        """获取统计信息"""
         if len(self.normal_delays) == 0:
             return {
                 'sample_count': 0,
                 'median': None,
-                'mad': None,
                 'min': None,
                 'max': None,
                 'mean': None
@@ -144,8 +238,7 @@ class AnomalyDetector:
         
         return {
             'sample_count': len(self.normal_delays),
-            'median': self.median or statistics.median(self.normal_delays),
-            'mad': self.mad,
+            'median': statistics.median(self.normal_delays),
             'min': min(self.normal_delays),
             'max': max(self.normal_delays),
             'mean': statistics.mean(self.normal_delays)
@@ -154,8 +247,8 @@ class AnomalyDetector:
     def reset(self):
         """重置检测器"""
         self.normal_delays.clear()
+        self.suspicious_frames.clear()
+        self.frame_history.clear()
         self.last_app_time_ms = None
         self.last_real_time_ms = None
-        self.median = None
-        self.mad = None
-
+        self.current_frame_idx = 0

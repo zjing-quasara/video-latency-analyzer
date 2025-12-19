@@ -22,14 +22,15 @@ class ReportGenerator:
         Returns:
             图表数据字典 {'frames': [...], 'delays': [...], 'times': [...]}
         """
-        valid_data = [r for r in results if r['delay_ms'] is not None]
+        # 过滤掉延时为空的数据和状态为"wrong"的异常数据
+        valid_data = [r for r in results if r.get('delay_ms') is not None and r.get('status') != 'wrong']
         if not valid_data:
             return {'frames': [], 'delays': [], 'times': []}
         
         return {
-            'frames': [r['frame_idx'] for r in valid_data],
-            'delays': [r['delay_ms'] for r in valid_data],
-            'times': [r['video_time_s'] for r in valid_data]
+            'frames': [r.get('frame_idx', 0) for r in valid_data],
+            'delays': [r.get('delay_ms', 0) for r in valid_data],
+            'times': [r.get('video_time_s', 0) for r in valid_data]
         }
     
     @staticmethod
@@ -43,7 +44,8 @@ class ReportGenerator:
         Returns:
             统计数据字典
         """
-        valid_data = [r for r in results if r['delay_ms'] is not None]
+        # 过滤掉延时为空的数据和状态为"wrong"的异常数据
+        valid_data = [r for r in results if r.get('delay_ms') is not None and r.get('status') != 'wrong']
         
         if not valid_data:
             return {
@@ -55,9 +57,9 @@ class ReportGenerator:
             }
         
         return {
-            'avg_delay': sum(r['delay_ms'] for r in valid_data) / len(valid_data),
-            'min_delay': min(r['delay_ms'] for r in valid_data),
-            'max_delay': max(r['delay_ms'] for r in valid_data),
+            'avg_delay': sum(r.get('delay_ms', 0) for r in valid_data) / len(valid_data),
+            'min_delay': min(r.get('delay_ms', 0) for r in valid_data),
+            'max_delay': max(r.get('delay_ms', 0) for r in valid_data),
             'valid_count': len(valid_data),
             'total_count': len(results)
         }

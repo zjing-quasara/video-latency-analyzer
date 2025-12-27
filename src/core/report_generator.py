@@ -9,6 +9,20 @@ from pathlib import Path
 
 
 class ReportGenerator:
+    # Chart.js库内容缓存（延迟加载）
+    _chartjs_content = None
+    
+    @classmethod
+    def _get_chartjs_content(cls) -> str:
+        """获取Chart.js库内容（用于内嵌到HTML中，实现离线使用）"""
+        if cls._chartjs_content is None:
+            chartjs_path = Path(__file__).parent / "chartjs.min.js"
+            if chartjs_path.exists():
+                cls._chartjs_content = chartjs_path.read_text(encoding='utf-8')
+            else:
+                # 如果本地文件不存在，使用CDN作为备选
+                cls._chartjs_content = None
+        return cls._chartjs_content
     """HTML报告生成器"""
     
     @staticmethod
@@ -252,13 +266,22 @@ class ReportGenerator:
         Returns:
             完整的HTML字符串
         """
+        # 获取Chart.js内容（内嵌方式，支持离线使用）
+        chartjs_content = cls._get_chartjs_content()
+        if chartjs_content:
+            # 内嵌方式：直接将Chart.js代码嵌入HTML
+            chartjs_script = f"<script>{chartjs_content}</script>"
+        else:
+            # 备选方式：使用CDN（需要网络）
+            chartjs_script = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
+        
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>视频延时分析报告 - {report_time}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    {chartjs_script}
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: Arial, sans-serif; background: #f5f5f5; overflow: hidden; }}
@@ -485,11 +508,21 @@ class ReportGenerator:
             <h1>视频延时分析报告</h1>
             <p style="color: #ecf0f1; margin-bottom: 15px; font-size: 14px;">{report_time}</p>
             <div class="video-container">
-                <video id="mainVideo" controls preload="auto">
+                <video id="mainVideo" controls preload="auto" style="background: #000;">
                     <source src="{video_filename}" type="video/mp4">
-                    <p style="color: white;">您的浏览器不支持视频播放</p>
-                    <p style="color: white;">视频路径: {video_filename}</p>
+                    <source src="{video_filename}" type="video/x-m4v">
+                    <p style="color: white;">您的浏览器不支持视频播放，请尝试：</p>
+                    <ul style="color: white; text-align: left;">
+                        <li>使用Chrome、Edge或Firefox最新版浏览器</li>
+                        <li>检查视频文件是否与HTML在同一文件夹</li>
+                        <li>尝试用VLC等播放器直接打开视频文件: {video_filename}</li>
+                    </ul>
                 </video>
+                <div id="video-error-msg" style="display:none; background:#ffe6e6; color:#c0392b; padding:10px; margin-top:10px; border-radius:5px;">
+                    <strong>⚠ 视频加载失败</strong><br>
+                    可能原因：浏览器不支持此视频编码格式<br>
+                    <small>建议：用VLC播放器打开 {video_filename}</small>
+                </div>
                 <div class="video-tip" id="current-frame-display">
                     <div><strong>蓝框:</strong> T_app <span id="current-app" style="color: #5dade2;">(--)</span></div>
                     <div><strong>绿框:</strong> T_real <span id="current-real" style="color: #58d68d;">(--)</span></div>
@@ -666,6 +699,22 @@ class ReportGenerator:
     </div><!-- end main-layout -->
     
     <script>
+        // 监听视频加载错误
+        const videoElement = document.getElementById('mainVideo');
+        const errorMsgElement = document.getElementById('video-error-msg');
+        
+        if (videoElement && errorMsgElement) {{
+            videoElement.addEventListener('error', function(e) {{
+                console.error('视频加载错误:', e);
+                errorMsgElement.style.display = 'block';
+            }}, true);
+            
+            videoElement.addEventListener('loadeddata', function() {{
+                console.log('视频加载成功');
+                errorMsgElement.style.display = 'none';
+            }});
+        }}
+        
         // ========== 可拖动分隔条功能 ==========
         const leftPanel = document.querySelector('.left-panel');
         const rightPanel = document.querySelector('.right-panel');

@@ -258,7 +258,6 @@ class MainWindow(QMainWindow):
         self.video_fps = 0  # 视频FPS
         self.roi_config_path = ROI_CONFIG_PATH  # 使用统一配置
         self.worker = None
-        self.use_gpu = True  # 默认使用GPU
         self.resize_ratio = 0.5
         self.report_folder = None  # 保存最后生成的报告文件夹路径
         self.phone_log_path = None  # 手机网络日志路径
@@ -370,11 +369,6 @@ class MainWindow(QMainWindow):
         # 性能设置
         perf_group = QGroupBox("性能设置")
         perf_layout = QHBoxLayout()
-        
-        self.gpu_checkbox = QCheckBox("使用 GPU 加速")
-        self.gpu_checkbox.setChecked(True)  # 默认勾选GPU
-        self.gpu_checkbox.stateChanged.connect(self.on_gpu_changed)
-        perf_layout.addWidget(self.gpu_checkbox)
         
         perf_layout.addWidget(QLabel("OCR 分辨率:"))
         self.resize_combo = QComboBox()
@@ -667,12 +661,6 @@ class MainWindow(QMainWindow):
             self.update_start_button()
             self.append_log(f"T_app ROI 已更新: {roi}")
     
-    def on_gpu_changed(self, state):
-        """GPU选项变化"""
-        self.use_gpu = (state == Qt.Checked)
-        status = "已启用" if self.use_gpu else "已禁用"
-        self.append_log(f"GPU 加速: {status}")
-    
     def on_resize_changed(self, index):
         """分辨率选项变化"""
         self.resize_ratio = self.resize_combo.currentData()
@@ -731,7 +719,7 @@ class MainWindow(QMainWindow):
         self.worker = AnalysisWorker(
             self.video_path, 
             app_roi, 
-            self.use_gpu, 
+            False,  # use_gpu固定为False
             self.resize_ratio,
             frame_limit,
             frame_step,

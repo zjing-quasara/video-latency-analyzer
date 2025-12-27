@@ -105,7 +105,7 @@ class AnalysisWorker(QThread):
             
             # 从配置加载硬性延时阈值
             from src.config import ANOMALY_DETECTION
-            hard_delay_max = ANOMALY_DETECTION.get('hard_delay_max_ms', 3000)
+            hard_delay_max = ANOMALY_DETECTION.get('hard_delay_max_ms', 10000)
             self.anomaly_detector = AnomalyDetector(hard_delay_max_ms=hard_delay_max)
             
             self.log_message.emit(f"[OK] ROI跟踪器和异常检测器已初始化（硬性延时上限: {hard_delay_max}ms）")
@@ -441,12 +441,12 @@ class AnalysisWorker(QThread):
             self.log_message.emit(f"视频尺寸: {w}x{h}, FPS: {fps / frame_step:.2f}")
             self.logger.info(f"视频参数: size={w}x{h}, fps={fps / frame_step:.2f}")
             
-            # 尝试多个编码器
+            # 尝试多个编码器（优先使用最兼容的）
             codecs = [
+                ('mp4v', 'MPEG-4 (最兼容)'),
                 ('avc1', 'H.264 (avc1)'),
                 ('H264', 'H.264 (H264)'),
                 ('X264', 'H.264 (X264)'),
-                ('mp4v', 'MPEG-4'),
                 ('XVID', 'XVID'),
             ]
             
@@ -477,53 +477,82 @@ class AnalysisWorker(QThread):
                     self.log_message.emit(f"[OK] 标定视频已保存: {video_out_path.name} ({size/1024:.2f} KB)")
                     self.logger.info(f"视频文件已生成: size={size} bytes")
                     
-                    # 使用FFmpeg重新编码为H.264格式，确保浏览器兼容性
-                    self.log_message.emit("正在转换视频为浏览器兼容格式...")
-                    self.logger.info("开始FFmpeg重新编码为H.264")
-                    
-                    import subprocess
-                    temp_video = video_out_path.with_suffix('.temp.mp4')
-                    video_out_path.rename(temp_video)
-                    
+                    # 可选：使用FFmpeg重新编码（如果可用）
                     try:
-                        # 使用FFmpeg重新编码为H.264
-                        cmd = [
-                            'ffmpeg',
-                            '-i', str(temp_video),
-                            '-c:v', 'libx264',  # 使用H.264编码器
-                            '-preset', 'fast',  # 快速编码
-                            '-crf', '23',  # 质量参数（18-28，数字越小质量越高）
-                            '-pix_fmt', 'yuv420p',  # 确保像素格式兼容
-                            '-y',  # 覆盖输出文件
-                            str(video_out_path)
-                        ]
+                        import subprocess
+                        import shutil
+                        import sys
                         
-                        result = subprocess.run(
-                            cmd,
-                            capture_output=True,
-                            text=True,
-                            encoding='utf-8',
-                            errors='ignore'
-                        )
+                        # 查找ffmpeg路径（支持打包后的exe）
+                        ffmpeg_path = None
                         
-                        if result.returncode == 0 and video_out_path.exists():
-                            new_size = video_out_path.stat().st_size
-                            self.log_message.emit(f"[OK] 视频已转换为H.264格式 ({new_size/1024:.2f} KB)")
-                            self.logger.info(f"FFmpeg转码成功: {new_size} bytes")
-                            # 删除临时文件
-                            temp_video.unlink()
+                        # 1. 检查打包后的内置ffmpeg
+                        if getattr(sys, 'frozen', False):
+                            base_path = Path(sys._MEIPASS)
+                            bundled_ffmpeg = base_path / "ffmpeg" / "ffmpeg.exe"
+                            if bundled_ffmpeg.exists():
+                                ffmpeg_path = str(bundled_ffmpeg)
+                                self.logger.info(f"使用内置ffmpeg: {ffmpeg_path}")
+                        
+                        # 2. 检查系统PATH中的ffmpeg
+                        if not ffmpeg_path:
+                            system_ffmpeg = shutil.which('ffmpeg')
+                            if system_ffmpeg:
+                                ffmpeg_path = system_ffmpeg
+                                self.logger.info(f"使用系统ffmpeg: {ffmpeg_path}")
+                        
+                        if ffmpeg_path:
+                            self.log_message.emit("正在转换视频为浏览器兼容格式...")
+                            self.logger.info("开始FFmpeg重新编码为H.264")
+                            
+                            temp_video = video_out_path.with_suffix('.temp.mp4')
+                            video_out_path.rename(temp_video)
+                            
+                            # 使用FFmpeg重新编码为H.264
+                            cmd = [
+                                ffmpeg_path,
+                                '-i', str(temp_video),
+                                '-c:v', 'libx264',  # 使用H.264编码器
+                                '-preset', 'fast',  # 快速编码
+                                '-crf', '23',  # 质量参数（18-28，数字越小质量越高）
+                                '-pix_fmt', 'yuv420p',  # 确保像素格式兼容
+                                '-y',  # 覆盖输出文件
+                                str(video_out_path)
+                            ]
+                            
+                            result = subprocess.run(
+                                cmd,
+                                capture_output=True,
+                                text=True,
+                                encoding='utf-8',
+                                errors='ignore',
+                                timeout=300  # 5分钟超时
+                            )
+                            
+                            if result.returncode == 0 and video_out_path.exists():
+                                new_size = video_out_path.stat().st_size
+                                self.log_message.emit(f"[OK] 视频已转换为H.264格式 ({new_size/1024:.2f} KB)")
+                                self.logger.info(f"FFmpeg转码成功: {new_size} bytes")
+                                # 删除临时文件
+                                temp_video.unlink()
+                            else:
+                                self.log_message.emit(f"[WARNING] FFmpeg转码失败，保留原始视频")
+                                self.logger.warning(f"FFmpeg转码失败: {result.stderr if result else 'unknown'}")
+                                # 恢复原始文件
+                                if temp_video.exists():
+                                    temp_video.rename(video_out_path)
                         else:
-                            self.log_message.emit(f"[WARNING] FFmpeg转码失败，保留原始视频")
-                            self.logger.warning(f"FFmpeg转码失败: {result.stderr}")
-                            # 恢复原始文件
-                            if temp_video.exists():
-                                temp_video.rename(video_out_path)
+                            self.log_message.emit("[INFO] FFmpeg未安装，跳过视频转码")
+                            self.logger.info("FFmpeg不可用，跳过转码")
                     except Exception as e:
                         self.log_message.emit(f"[WARNING] 视频转码出错: {str(e)}，保留原始视频")
-                        self.logger.error(f"FFmpeg转码异常: {e}")
+                        self.logger.warning(f"FFmpeg转码异常: {e}")
                         # 恢复原始文件
-                        if temp_video.exists():
-                            temp_video.rename(video_out_path)
+                        try:
+                            if 'temp_video' in locals() and temp_video.exists():
+                                temp_video.rename(video_out_path)
+                        except:
+                            pass
                 else:
                     self.log_message.emit(f"[ERROR] 错误: 视频文件未创建！")
                     self.logger.error(f"视频文件不存在: {video_out_path}")

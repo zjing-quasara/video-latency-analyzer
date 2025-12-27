@@ -18,7 +18,7 @@ class AnomalyDetector:
     - 实时检测 + 回溯修正
     """
     
-    def __init__(self, hard_delay_max_ms: float = 3000):
+    def __init__(self, hard_delay_max_ms: float = 10000):
         """
         初始化检测器
         
@@ -76,7 +76,7 @@ class AnomalyDetector:
         if abs(delay_ms) > 10000:
             return False, f"延迟超过物理极限: {delay_ms/1000:.1f}秒", False
         
-        if delay_ms < -5000:
+        if delay_ms < -10000:
             return False, f"负延迟过大: {delay_ms/1000:.1f}秒", False
         
         # 如果没有上一帧，跳过跳变检测

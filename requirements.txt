@@ -1,16 +1,16 @@
-# 视频延时分析工具依赖包
+# Video Delay Analyzer - Dependencies
 
-# 核心依赖
+# Core
 opencv-python==4.6.0.66
 paddleocr==3.3.2
-paddlepaddle==3.0.0  # 统一包，支持GPU和CPU
-numpy<2.0            # 与opencv兼容
+paddlepaddle==3.0.0
+numpy<2.0
 
-# GUI依赖
+# GUI
 PyQt5==5.15.11
 
-# 其他依赖
-Pillow>=9.0.0       # 图像处理
+# Utils
+Pillow>=9.0.0
 
 
 

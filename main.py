@@ -1,5 +1,5 @@
 """
-视频延时分析工具 - 启动入口
+Video Delay Analyzer - Application Entry Point
 """
 # 必须在最开始设置，禁用PaddleX的模型检查（避免卡顿）
 import os

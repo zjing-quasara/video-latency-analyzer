@@ -100,7 +100,9 @@ Thumbs.db
 *.tar.gz
 *.rar
 *.7z
-build_exe.spec
+*.spec
+pyinstaller_hooks/
+create_launcher.py
 
 # ===== PaddleOCR模型（太大）=====
 .paddleocr/

@@ -627,11 +627,11 @@ def detect_time_real_optimized(
             x1, y1, x2, y2 = search_roi
             search_region = frame[y1:y2, x1:x2]
             
-            # OCR识别
-            result = _ocr_recognize_region(search_region, ocr)
-            if result:
-                time_str, conf, bbox_in_region, original_text = result
-                
+            # OCR识别 - 获取所有候选
+            candidates = _ocr_recognize_region_all(search_region, ocr)
+            
+            # 遍历所有候选
+            for time_str, conf, bbox_in_region, original_text in candidates:
                 # 计算在原图中的绝对坐标
                 abs_bbox = (
                     bbox_in_region[0] + x1,
@@ -665,11 +665,11 @@ def detect_time_real_optimized(
     if debug:
         print(f"[DEBUG] 帧{frame_idx}: 全局搜索")
     
-    # 搜索区域：50% > 70% > 90%
+    # 搜索区域：50% > 70% > 100%（全画面兜底）
     search_regions = [
         ('center_50', int(w*0.25), int(h*0.25), int(w*0.75), int(h*0.75)),
         ('center_70', int(w*0.15), int(h*0.15), int(w*0.85), int(h*0.85)),
-        ('center_90', int(w*0.05), int(h*0.05), int(w*0.95), int(h*0.95)),
+        ('full_100', 0, 0, w, h),  # 100% 全画面兜底
     ]
     
     for region_name, x1, y1, x2, y2 in search_regions:
@@ -682,10 +682,14 @@ def detect_time_real_optimized(
             print(f"[DEBUG]   搜索区域: {region_name}")
         
         try:
-            result = _ocr_recognize_region(region, ocr)
-            if result:
-                time_str, conf, bbox_in_region, original_text = result
-                
+            # 获取该区域内的所有时间候选
+            candidates = _ocr_recognize_region_all(region, ocr)
+            
+            if debug and candidates:
+                print(f"[DEBUG]   找到 {len(candidates)} 个时间候选")
+            
+            # 遍历所有候选，找到第一个通过验证的
+            for time_str, conf, bbox_in_region, original_text in candidates:
                 # 计算绝对坐标
                 abs_bbox = (
                     bbox_in_region[0] + x1,
@@ -693,6 +697,9 @@ def detect_time_real_optimized(
                     bbox_in_region[2] + x1,
                     bbox_in_region[3] + y1
                 )
+                
+                if debug:
+                    print(f"[DEBUG]   尝试候选: {time_str} @ {abs_bbox}")
                 
                 # 格式检查和扩展
                 final_bbox, final_time_str, final_conf = _verify_and_expand_roi(
@@ -705,6 +712,10 @@ def detect_time_real_optimized(
                     if debug:
                         print(f"[DEBUG]   [OK] 全局搜索成功: {final_time_str} (区域:{region_name})")
                     return final_bbox, final_time_str, final_conf
+            
+            # 该区域所有候选都被拒绝，继续下一个区域
+            if debug and candidates:
+                print(f"[DEBUG]   该区域所有候选都被拒绝，继续下一个区域")
         
         except Exception as e:
             if debug:
@@ -718,20 +729,22 @@ def detect_time_real_optimized(
     return None, None, 0.0
 
 
-def _ocr_recognize_region(region, ocr) -> Optional[Tuple[str, float, Tuple[int, int, int, int], str]]:
+def _ocr_recognize_region_all(region, ocr) -> list:
     """
-    在指定区域进行OCR识别，找到第一个时间格式
+    在指定区域进行OCR识别，返回所有识别到的时间候选
     
     Returns:
-        (时间字符串, 置信度, bbox, 原始文本) 或 None
+        列表，每个元素为 (时间字符串, 置信度, bbox, 原始文本)
     """
+    candidates = []
+    
     try:
         result = ocr.ocr(region, cls=False)
     except TypeError:
         result = ocr.ocr(region)
     
     if not result or not result[0]:
-        return None
+        return candidates
     
     # 遍历所有识别结果
     for line in result[0]:
@@ -763,9 +776,9 @@ def _ocr_recognize_region(region, ocr) -> Optional[Tuple[str, float, Tuple[int, 
                     ys = [int(bbox_points[i]) for i in range(1, len(bbox_points), 2)]
                 
                 bbox = (min(xs), min(ys), max(xs), max(ys))
-                return time_str, confidence, bbox, text  # 返回原始文本
+                candidates.append((time_str, confidence, bbox, text))
     
-    return None
+    return candidates
 
 
 def _verify_and_expand_roi(

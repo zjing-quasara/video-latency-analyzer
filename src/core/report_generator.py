@@ -18,7 +18,12 @@ class ReportGenerator:
         if cls._chartjs_content is None:
             chartjs_path = Path(__file__).parent / "chartjs.min.js"
             if chartjs_path.exists():
-                cls._chartjs_content = chartjs_path.read_text(encoding='utf-8')
+                content = chartjs_path.read_text(encoding='utf-8')
+                # 保护 Chart.js 中的 }} 和 {{ 不被后续的模板替换影响
+                # 使用占位符替换，在最终输出前还原
+                content = content.replace('}}', '__CHARTJS_DOUBLE_CLOSE__')
+                content = content.replace('{{', '__CHARTJS_DOUBLE_OPEN__')
+                cls._chartjs_content = content
             else:
                 # 如果本地文件不存在，使用CDN作为备选
                 cls._chartjs_content = None
@@ -227,8 +232,12 @@ class ReportGenerator:
         html_content = html_content.replace('__NETWORK_PHONE_PING__', network_phone_ping_json)
         html_content = html_content.replace('__NETWORK_PC_PING__', network_pc_ping_json)
         
-        # 修复双大括号
+        # 修复双大括号（模板代码中的转义）
         html_content = html_content.replace('{{', '{').replace('}}', '}')
+        
+        # 还原 Chart.js 中被保护的双大括号
+        html_content = html_content.replace('__CHARTJS_DOUBLE_CLOSE__', '}}')
+        html_content = html_content.replace('__CHARTJS_DOUBLE_OPEN__', '{{')
         
         # 写入文件
         with open(output_path, 'w', encoding='utf-8') as f:
